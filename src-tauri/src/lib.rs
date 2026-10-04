@@ -229,6 +229,38 @@ fn demarrer_les_mises_a_jour(app: &AppHandle) {
     });
 }
 
+/// Une petite fenêtre de message, sans bloquer l'app.
+fn prevenir(app: &AppHandle, texte: String) {
+    app.dialog().message(texte).title("SQUAD").show(|_| {});
+}
+
+/// « Vérifier les mises à jour », depuis le menu de l'icône : la même
+/// recherche que la vérification automatique, mais tout de suite, et avec
+/// une réponse dans les deux cas. L'installeur ferme l'app puis la relance.
+fn verifier_maintenant(app: &AppHandle) {
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let updater = match app.updater() {
+            Ok(updater) => updater,
+            Err(e) => return prevenir(&app, format!("Impossible de chercher une mise à jour : {e}")),
+        };
+        let trouvee = match tauri::async_runtime::block_on(updater.check()) {
+            Ok(trouvee) => trouvee,
+            Err(e) => return prevenir(&app, format!("Impossible de chercher une mise à jour : {e}")),
+        };
+        let Some(mise_a_jour) = trouvee else {
+            return prevenir(&app, format!("SQUAD est à jour (version {}).", app.package_info().version));
+        };
+        prevenir(
+            &app,
+            format!("Version {} trouvée : installation, SQUAD va redémarrer.", mise_a_jour.version),
+        );
+        if let Err(e) = tauri::async_runtime::block_on(mise_a_jour.download_and_install(|_, _| {}, || {})) {
+            prevenir(&app, format!("La mise à jour a échoué : {e}"));
+        }
+    });
+}
+
 /// La fenêtre, construite ici plutôt que par la configuration pour pouvoir
 /// décider où vont les liens. Cachée quand Windows lance l'app au démarrage.
 fn creer_la_fenetre(app: &AppHandle, visible: bool) -> tauri::Result<()> {
@@ -307,10 +339,11 @@ pub fn run() {
                 false,
                 None::<&str>,
             )?;
+            let verifier = MenuItem::with_id(app, "verifier", "Vérifier les mises à jour", true, None::<&str>)?;
             let quitter = MenuItem::with_id(app, "quitter", "Quitter", true, None::<&str>)?;
             let menu = Menu::with_items(
                 app,
-                &[&ouvrir, &demarrage, &invisible, &separateur, &version, &quitter],
+                &[&ouvrir, &demarrage, &invisible, &separateur, &version, &verifier, &quitter],
             )?;
 
             let case_demarrage = demarrage.clone();
@@ -340,6 +373,7 @@ pub fn run() {
                         let _ = case_invisible.set_checked(etat);
                         let _ = app.emit("invisible", etat);
                     }
+                    "verifier" => verifier_maintenant(app),
                     "quitter" => app.exit(0),
                     _ => {}
                 })
