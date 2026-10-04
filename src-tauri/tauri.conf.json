@@ -40,7 +40,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "A_REMPLACER_PAR_LA_CLE_PUBLIQUE",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEQwQ0UyRjJEQkIyQTAwN0UKUldSK0FDcTdMUy9PMEp4VXVWZlN0TWVCMGQxT043a2FRckRQNlllNjNxOHVDb0VCUEtmaXlPTG4K",
       "endpoints": [
         "https://github.com/Reskell/squad-desktop/releases/latest/download/latest.json"
       ],
