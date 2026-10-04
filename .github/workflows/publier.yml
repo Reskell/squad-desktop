@@ -1,0 +1,48 @@
+# Publier une version de l'app SQUAD.
+#
+# 1. Monter la version dans src-tauri/tauri.conf.json (0.1.0 -> 0.2.0…) et pousser.
+# 2. Sur GitHub : onglet Actions -> « Publier une version » -> Run workflow.
+#
+# Windows compile l'app, signe l'installeur avec la clé gardée dans les
+# secrets du dépôt, et crée la version (tag v<version>) avec l'installeur et
+# le fichier latest.json que lisent les apps déjà installées pour se mettre
+# à jour toutes seules.
+name: Publier une version
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - run: npm ci
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: v__VERSION__
+          releaseName: SQUAD v__VERSION__
+          releaseBody: >-
+            Pour l'installer la première fois : télécharge SQUAD_…_x64-setup.exe
+            ci-dessous et lance-le. Ensuite, l'app se met à jour toute seule.
+          releaseDraft: false
+          prerelease: false

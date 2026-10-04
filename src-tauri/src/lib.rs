@@ -7,7 +7,9 @@
 //! - les parties jouées (parties.rs), que le site enregistre — ce qui
 //!   marque aussi la présence aux soirées ;
 //! - une icône dans la barre des tâches, le lancement avec Windows, et les
-//!   liens externes renvoyés vers le navigateur (liens.rs).
+//!   liens externes renvoyés vers le navigateur (liens.rs) ;
+//! - les mises à jour, téléchargées et installées toutes seules depuis les
+//!   versions publiées sur GitHub.
 
 mod liens;
 mod parties;
@@ -21,6 +23,7 @@ use tauri::{
     AppHandle, Emitter, Manager, Url, WebviewWindowBuilder, WindowEvent,
 };
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
+use tauri_plugin_updater::UpdaterExt;
 
 /// Un relevé des programmes lancés toutes les 30 secondes : assez fin pour
 /// la règle des 15 minutes de présence, invisible pour le processeur.
@@ -31,6 +34,10 @@ const RELIRE_LES_JEUX_TOUS_LES: u32 = 20;
 /// Passé par Windows quand l'app démarre avec la session : elle se lance
 /// alors cachée dans la barre des tâches, sans ouvrir de fenêtre.
 const ARG_DEMARRAGE: &str = "--au-demarrage";
+/// Première recherche de mise à jour peu après le démarrage, puis toutes
+/// les six heures : l'app reste souvent ouverte des jours entiers.
+const PREMIERE_RECHERCHE: Duration = Duration::from_secs(60);
+const ENTRE_DEUX_RECHERCHES: Duration = Duration::from_secs(6 * 60 * 60);
 
 /// Ramène la fenêtre au premier plan, qu'elle soit cachée ou réduite.
 fn montrer(app: &AppHandle) {
@@ -108,6 +115,33 @@ fn demarrer_la_surveillance(app: &AppHandle) {
     });
 }
 
+/// Cherche une nouvelle version et l'installe sans rien demander. L'app se
+/// ferme le temps de l'installation puis repart, d'où une règle : jamais
+/// pendant qu'un jeu tourne, pour ne pas couper une partie en deux.
+fn demarrer_les_mises_a_jour(app: &AppHandle) {
+    // En développement (npm run dev), la version locale n'a pas de sens face
+    // aux versions publiées : on ne cherche rien.
+    if cfg!(debug_assertions) {
+        return;
+    }
+    let app = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(PREMIERE_RECHERCHE);
+        loop {
+            let un_jeu_tourne = !app.state::<parties::Parties>().en_cours().is_empty();
+            if !un_jeu_tourne {
+                tauri::async_runtime::block_on(async {
+                    let Ok(updater) = app.updater() else { return };
+                    if let Ok(Some(mise_a_jour)) = updater.check().await {
+                        let _ = mise_a_jour.download_and_install(|_, _| {}, || {}).await;
+                    }
+                });
+            }
+            std::thread::sleep(ENTRE_DEUX_RECHERCHES);
+        }
+    });
+}
+
 /// La fenêtre, construite ici plutôt que par la configuration pour pouvoir
 /// décider où vont les liens. Cachée quand Windows lance l'app au démarrage.
 fn creer_la_fenetre(app: &AppHandle, visible: bool) -> tauri::Result<()> {
@@ -144,6 +178,7 @@ fn creer_la_fenetre(app: &AppHandle, visible: bool) -> tauri::Result<()> {
 
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_autostart::init(
             MacosLauncher::LaunchAgent,
             Some(vec![ARG_DEMARRAGE]),
@@ -162,8 +197,17 @@ pub fn run() {
                 None::<&str>,
             )?;
             let separateur = PredefinedMenuItem::separator(app)?;
+            // La version installée, grisée : utile pour savoir si la mise à
+            // jour est passée quand un pote signale un souci.
+            let version = MenuItem::with_id(
+                app,
+                "version",
+                format!("SQUAD {}", app.package_info().version),
+                false,
+                None::<&str>,
+            )?;
             let quitter = MenuItem::with_id(app, "quitter", "Quitter", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&ouvrir, &demarrage, &separateur, &quitter])?;
+            let menu = Menu::with_items(app, &[&ouvrir, &demarrage, &separateur, &version, &quitter])?;
 
             let case_demarrage = demarrage.clone();
             TrayIconBuilder::with_id("squad")
@@ -202,6 +246,7 @@ pub fn run() {
                 .build(app)?;
 
             demarrer_la_surveillance(app.handle());
+            demarrer_les_mises_a_jour(app.handle());
             Ok(())
         })
         // Fermer la fenêtre la cache au lieu de quitter : l'app doit rester
