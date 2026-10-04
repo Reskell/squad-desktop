@@ -1,7 +1,9 @@
 # Publier une version de l'app SQUAD.
 #
-# 1. Monter la version dans src-tauri/tauri.conf.json (0.1.0 -> 0.2.0…) et pousser.
-# 2. Sur GitHub : onglet Actions -> « Publier une version » -> Run workflow.
+# Il suffit de monter la version dans src-tauri/tauri.conf.json
+# (0.1.1 -> 0.1.2…) et de pousser : la publication part toute seule.
+# Si cette version est déjà publiée, le workflow s'arrête sans rien faire.
+# Le bouton Run workflow (onglet Actions) reste là pour relancer à la main.
 #
 # Windows compile l'app, signe l'installeur avec la clé gardée dans les
 # secrets du dépôt, et crée la version (tag v<version>) avec l'installeur et
@@ -10,13 +12,41 @@
 name: Publier une version
 
 on:
+  push:
+    branches: [main]
+    paths: ['src-tauri/tauri.conf.json']
   workflow_dispatch:
+
+# Une publication à la fois : la suivante attend, puis voit que la version
+# existe déjà et s'arrête.
+concurrency:
+  group: publier
+  cancel-in-progress: false
 
 permissions:
   contents: write
 
 jobs:
+  verifier:
+    runs-on: ubuntu-latest
+    outputs:
+      nouvelle: ${{ steps.version.outputs.nouvelle }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: version
+        run: |
+          V=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          if git ls-remote --exit-code --tags origin "refs/tags/v$V" > /dev/null; then
+            echo "v$V est déjà publiée : rien à faire."
+            echo "nouvelle=non" >> "$GITHUB_OUTPUT"
+          else
+            echo "v$V n'existe pas encore : on la publie."
+            echo "nouvelle=oui" >> "$GITHUB_OUTPUT"
+          fi
+
   windows:
+    needs: verifier
+    if: needs.verifier.outputs.nouvelle == 'oui'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -37,7 +67,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: v__VERSION__
           releaseName: SQUAD v__VERSION__
