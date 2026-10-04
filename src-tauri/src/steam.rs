@@ -3,8 +3,9 @@
 //! Tout se lit sur le disque, sans réseau ni compte : Steam tient la liste
 //! de ses bibliothèques dans `steamapps/libraryfolders.vdf`, et un fichier
 //! `appmanifest_<appid>.acf` par jeu installé dans chacune. On n'en garde
-//! que l'appid et le nom — jamais les chemins ni le reste du PC (règle
-//! « confiance des potes » du document maître).
+//! que l'appid et le nom pour le site — jamais les chemins ni le reste du
+//! PC (règle « confiance des potes » du document maître). Le dossier
+//! d'installation reste dans l'app, pour reconnaître un jeu qui tourne.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -24,6 +25,12 @@ const PAS_DES_JEUX: &[u32] = &[
 /// Tous les jeux installés, triés par titre, sans doublon d'appid.
 /// Une liste vide si Steam est introuvable : ce n'est pas une erreur.
 pub fn jeux_installes() -> Vec<JeuInstalle> {
+    jeux_et_dossiers().into_iter().map(|(jeu, _)| jeu).collect()
+}
+
+/// Les jeux installés avec leur dossier d'installation, pour reconnaître un
+/// jeu qui tourne. Le dossier ne quitte jamais l'app : il ne sert qu'ici.
+pub fn jeux_et_dossiers() -> Vec<(JeuInstalle, PathBuf)> {
     match dossier_steam() {
         Some(racine) => jeux_dans(&racine),
         None => Vec::new(),
@@ -31,7 +38,7 @@ pub fn jeux_installes() -> Vec<JeuInstalle> {
 }
 
 /// Les jeux d'une installation Steam donnée, bibliothèques secondaires comprises.
-pub fn jeux_dans(racine: &Path) -> Vec<JeuInstalle> {
+pub fn jeux_dans(racine: &Path) -> Vec<(JeuInstalle, PathBuf)> {
     let mut bibliotheques = vec![racine.to_path_buf()];
     if let Ok(texte) = fs::read_to_string(racine.join("steamapps").join("libraryfolders.vdf")) {
         for chemin in valeurs(&texte, "path") {
@@ -42,7 +49,7 @@ pub fn jeux_dans(racine: &Path) -> Vec<JeuInstalle> {
         }
     }
 
-    let mut jeux: Vec<JeuInstalle> = Vec::new();
+    let mut jeux: Vec<(JeuInstalle, PathBuf)> = Vec::new();
     for bibliotheque in bibliotheques {
         // Un disque débranché ou une bibliothèque supprimée : on passe.
         let Ok(entrees) = fs::read_dir(bibliotheque.join("steamapps")) else {
@@ -56,14 +63,15 @@ pub fn jeux_dans(racine: &Path) -> Vec<JeuInstalle> {
             let Ok(texte) = fs::read_to_string(entree.path()) else {
                 continue;
             };
-            if let Some(jeu) = lire_manifeste(&texte) {
-                if !jeux.iter().any(|j| j.appid == jeu.appid) {
-                    jeux.push(jeu);
+            if let Some((jeu, installdir)) = lire_manifeste_complet(&texte) {
+                if !jeux.iter().any(|(j, _)| j.appid == jeu.appid) {
+                    let dossier = bibliotheque.join("steamapps").join("common").join(installdir);
+                    jeux.push((jeu, dossier));
                 }
             }
         }
     }
-    jeux.sort_by_key(|j| j.title.to_lowercase());
+    jeux.sort_by_key(|(j, _)| j.title.to_lowercase());
     jeux
 }
 
@@ -113,7 +121,13 @@ fn meme_dossier(a: &Path, b: &Path) -> bool {
 }
 
 /// Un manifeste de jeu → le jeu, s'il est entièrement installé et que c'en est un.
+#[cfg(test)]
 fn lire_manifeste(texte: &str) -> Option<JeuInstalle> {
+    lire_manifeste_complet(texte).map(|(jeu, _)| jeu)
+}
+
+/// Le jeu et le nom de son dossier dans `steamapps/common`.
+fn lire_manifeste_complet(texte: &str) -> Option<(JeuInstalle, String)> {
     let paires = paires(texte);
     let valeur = |cle: &str| {
         paires
@@ -137,10 +151,14 @@ fn lire_manifeste(texte: &str) -> Option<JeuInstalle> {
     if title.is_empty() {
         return None;
     }
-    Some(JeuInstalle {
-        appid,
-        title: title.to_string(),
-    })
+    let installdir = valeur("installdir").map(str::trim).unwrap_or_default().to_string();
+    Some((
+        JeuInstalle {
+            appid,
+            title: title.to_string(),
+        },
+        installdir,
+    ))
 }
 
 /// Toutes les valeurs d'une clé, où qu'elle soit dans le fichier.
@@ -304,11 +322,12 @@ mod tests {
         let jeux = jeux_dans(&racine);
         fs::remove_dir_all(&racine).ok();
         assert_eq!(
-            jeux,
+            jeux.iter().map(|(j, _)| j.clone()).collect::<Vec<_>>(),
             vec![
                 JeuInstalle { appid: 1086940, title: "Baldur's Gate 3".into() },
                 JeuInstalle { appid: 892970, title: "Valheim".into() },
             ]
         );
+        assert_eq!(jeux[1].1, secondaire.join("steamapps").join("common").join("X"));
     }
 }

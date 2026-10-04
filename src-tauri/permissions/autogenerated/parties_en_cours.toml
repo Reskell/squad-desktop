@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-parties-en-cours"
+description = "Enables the parties_en_cours command without any pre-configured scope."
+commands.allow = ["parties_en_cours"]
+
+[[permission]]
+identifier = "deny-parties-en-cours"
+description = "Denies the parties_en_cours command without any pre-configured scope."
+commands.deny = ["parties_en_cours"]

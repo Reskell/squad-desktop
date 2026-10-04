@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-parties-envoyees"
+description = "Enables the parties_envoyees command without any pre-configured scope."
+commands.allow = ["parties_envoyees"]
+
+[[permission]]
+identifier = "deny-parties-envoyees"
+description = "Denies the parties_envoyees command without any pre-configured scope."
+commands.deny = ["parties_envoyees"]

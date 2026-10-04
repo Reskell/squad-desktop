@@ -5,7 +5,12 @@ fn main() {
     // les appeler. Là, seul le site SQUAD//LOG y a droit.
     tauri_build::try_build(
         tauri_build::Attributes::new()
-            .app_manifest(tauri_build::AppManifest::new().commands(&["jeux_installes"])),
+            .app_manifest(tauri_build::AppManifest::new().commands(&[
+                "jeux_installes",
+                "parties_a_envoyer",
+                "parties_envoyees",
+                "parties_en_cours",
+            ])),
     )
     .expect("échec de la préparation de la compilation");
 }
