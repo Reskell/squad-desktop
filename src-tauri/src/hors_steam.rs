@@ -215,6 +215,29 @@ pub fn instances_prism(chemin: &Path) -> Vec<InstancePrism> {
     instances
 }
 
+/// Le client Riot (`RiotClientServices.exe`) lance tous les jeux Riot et
+/// tourne en permanence : on ne peut ni le lancer « tout court », ni
+/// conclure qu'on joue parce qu'il est ouvert. Pour chaque jeu Riot : le
+/// produit à demander au client, et le programme du jeu lui-même.
+const JEUX_RIOT: &[(&str, &str, &str)] = &[
+    // (mot du titre, produit Riot, début du nom du programme du jeu)
+    ("league", "league_of_legends", "league"), // client LoL (salon, sélection) et partie
+    ("valorant", "valorant", "valorant-win64-shipping"),
+    ("runeterra", "bacon", "lor"),
+];
+
+pub fn est_riot(chemin: &Path) -> bool {
+    nom_du_programme(chemin).to_lowercase().starts_with("riotclientservices")
+}
+
+fn jeu_riot(lien: &Lien) -> Option<&'static (&'static str, &'static str, &'static str)> {
+    if !est_riot(Path::new(&lien.chemin)) {
+        return None;
+    }
+    let titre = lien.title.to_lowercase();
+    JEUX_RIOT.iter().find(|(mot, _, _)| titre.contains(mot))
+}
+
 /// Une adresse de serveur acceptable : `hote` ou `hote:port`, sans espace
 /// ni caractère qui pourrait passer pour une option.
 pub fn adresse_valide(adresse: &str) -> bool {
@@ -228,6 +251,11 @@ pub fn adresse_valide(adresse: &str) -> bool {
 /// se connecter directement à un serveur.
 pub fn arguments(lien: &Lien, serveur: Option<&str>) -> Vec<String> {
     let mut args = Vec::new();
+    if let Some((_, produit, _)) = jeu_riot(lien) {
+        args.push(format!("--launch-product={produit}"));
+        args.push("--launch-patchline=live".to_string());
+        return args;
+    }
     if est_prism(Path::new(&lien.chemin)) {
         if let Some(instance) = &lien.instance_prism {
             args.push("--launch".to_string());
@@ -252,6 +280,13 @@ fn est_minecraft(lien: &Lien) -> bool {
 /// le programme lui-même si ce dossier est trop général (`C:\`, `C:\Jeux`)
 /// pour désigner un seul jeu.
 pub fn tourne(lien: &Lien, programmes: &[Programme]) -> bool {
+    if est_riot(Path::new(&lien.chemin)) {
+        // Le client Riot ouvert ne veut rien dire : seul le jeu compte.
+        return match jeu_riot(lien) {
+            Some((_, _, programme)) => programmes.iter().any(|p| p.nom.starts_with(programme)),
+            None => false,
+        };
+    }
     if est_minecraft(lien) {
         return programmes.iter().any(|p| {
             p.nom.starts_with("java")
@@ -339,6 +374,20 @@ mod tests {
         // Une adresse douteuse est ignorée, jamais passée au programme.
         assert_eq!(arguments(&l, Some("--help")), vec!["--launch", "Survie"]);
         assert!(arguments(&lien("D:\\Jeux\\Celeste\\Celeste.exe", "Celeste"), Some("x:1")).is_empty());
+    }
+
+    #[test]
+    fn league_passe_par_le_client_riot() {
+        let l = lien("C:\\Riot Games\\Riot Client\\RiotClientServices.exe", "League of Legends");
+        assert_eq!(
+            arguments(&l, Some("x:1")),
+            vec!["--launch-product=league_of_legends", "--launch-patchline=live"]
+        );
+        // Le client Riot ouvert : pas une partie.
+        let client = exe("C:\\Riot Games\\Riot Client\\RiotClientServices.exe");
+        assert!(!tourne(&l, &[client.clone()]));
+        let jeu = exe("C:\\Riot Games\\League of Legends\\Game\\League of Legends.exe");
+        assert!(tourne(&l, &[client, jeu]));
     }
 
     #[test]
