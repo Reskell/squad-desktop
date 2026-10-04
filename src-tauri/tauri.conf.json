@@ -40,7 +40,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEZBRUQxNkZBQkY3NDU0QjkKUldTNVZIUy8raGJ0K3R0ZXc2ejZnVEFuMSszK0dIRUtiRVZMSEVvd3dnVlFwTXd6ZWhvU0p2a3kK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDI2Qjk2MUNFMTE1Q0Y2OTcKUldTWDlsd1J6bUc1SnJaZHBqdkd0N0dpY093MnAxS0NweTN3bDlUS0ZKVlNMMmRMaldEZ1phcWkK",
       "endpoints": [
         "https://github.com/Reskell/squad-desktop/releases/latest/download/latest.json"
       ],
