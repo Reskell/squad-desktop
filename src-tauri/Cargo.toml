@@ -1,6 +1,6 @@
 [package]
 name = "squad-desktop"
-version = "0.1.0"
+version = "0.1.1"
 description = "L'app de bureau de SQUAD : le site SQUAD//LOG, plus ce qui demande le PC"
 edition = "2021"
 
