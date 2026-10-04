@@ -12,9 +12,14 @@ pub const SITE: &str = "squadlog-three.vercel.app";
 /// `true` : la page s'ouvre dans la fenêtre. `false` : elle part dans le
 /// navigateur. `chemin` commence par `/`.
 pub fn reste_dans_la_fenetre(schema: &str, hote: &str, chemin: &str) -> bool {
-    // Pages internes du moteur (about:blank, data:…) : rien à ouvrir ailleurs.
-    if schema != "http" && schema != "https" {
-        return true;
+    match schema {
+        "http" | "https" => {}
+        // Pages internes du moteur (about:blank, data:…) : rien à ouvrir ailleurs.
+        "about" | "data" | "blob" | "javascript" | "tauri" | "asset" | "ipc" => return true,
+        // Les autres protocoles appartiennent à une application du PC :
+        // steam://rungameid/… (le bouton Jouer de SQUAD//PLAY), discord://…
+        // Windows les confie à la bonne application, sans passer par la fenêtre.
+        _ => return false,
     }
     let hote = hote.to_ascii_lowercase();
     if hote == SITE {
@@ -59,6 +64,12 @@ mod tests {
         assert!(!reste_dans_la_fenetre("https", "discord.com", "/channels/123"));
         assert!(!reste_dans_la_fenetre("https", "squadlog-git-main-seequall.vercel.app", "/"));
         assert!(!reste_dans_la_fenetre("https", "evil-squadlog-three.vercel.app.example.com", "/"));
+    }
+
+    #[test]
+    fn les_protocoles_d_applications_sortent() {
+        assert!(!reste_dans_la_fenetre("steam", "rungameid", "/892970"));
+        assert!(!reste_dans_la_fenetre("discord", "", "/channels/1"));
     }
 
     #[test]
