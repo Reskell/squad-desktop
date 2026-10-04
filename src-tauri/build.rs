@@ -10,6 +10,12 @@ fn main() {
                 "parties_a_envoyer",
                 "parties_envoyees",
                 "parties_en_cours",
+                "presence_invisible",
+                "jeux_hors_steam",
+                "choisir_programme",
+                "associer_jeu_hors_steam",
+                "retirer_jeu_hors_steam",
+                "lancer_jeu_hors_steam",
             ])),
     )
     .expect("échec de la préparation de la compilation");

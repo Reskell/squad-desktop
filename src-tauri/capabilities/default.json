@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Droits de la fenêtre principale : seul le site SQUAD//LOG peut lire les jeux installés et les parties",
+  "description": "Droits de la fenêtre principale : seul le site SQUAD//LOG peut lire les jeux installés et les parties, et lancer les jeux hors Steam associés",
   "windows": [
     "main"
   ],
@@ -15,6 +15,12 @@
     "allow-jeux-installes",
     "allow-parties-a-envoyer",
     "allow-parties-envoyees",
-    "allow-parties-en-cours"
+    "allow-parties-en-cours",
+    "allow-presence-invisible",
+    "allow-jeux-hors-steam",
+    "allow-choisir-programme",
+    "allow-associer-jeu-hors-steam",
+    "allow-retirer-jeu-hors-steam",
+    "allow-lancer-jeu-hors-steam"
   ]
 }

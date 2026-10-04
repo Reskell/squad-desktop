@@ -1,9 +1,10 @@
-//! Les parties : quel jeu Steam tourne sur ce PC, et depuis quand.
+//! Les parties : quel jeu tourne sur ce PC, et depuis quand.
 //!
 //! Toutes les 30 secondes, l'app regarde les programmes lancés. Un programme
 //! qui tourne depuis le dossier d'installation d'un jeu Steam
 //! (`steamapps/common/<jeu>`) veut dire que ce jeu est lancé — pas besoin de
-//! connaître le nom de son `.exe`. Quand il disparaît, la partie est finie et
+//! connaître le nom de son `.exe`. Les jeux hors Steam ont leurs propres
+//! règles (hors_steam.rs). Quand le jeu disparaît, la partie est finie et
 //! part dans le carnet des parties à envoyer.
 //!
 //! Le carnet est écrit sur le disque à chaque changement : une partie finie
@@ -22,12 +23,51 @@ use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 /// clignote, pas une partie.
 pub const DUREE_MINIMALE_MS: i64 = 60_000;
 
+/// Un jeu vu en train de tourner pendant un relevé. Un jeu Steam a son
+/// appid ; un jeu hors Steam, l'identifiant de sa fiche sur le site.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Vu {
+    pub appid: Option<u32>,
+    pub game_id: Option<String>,
+    pub title: String,
+}
+
+impl Vu {
+    pub fn steam(appid: u32, title: impl Into<String>) -> Self {
+        Vu { appid: Some(appid), game_id: None, title: title.into() }
+    }
+
+    pub fn hors_steam(game_id: impl Into<String>, title: impl Into<String>) -> Self {
+        Vu { appid: None, game_id: Some(game_id.into()), title: title.into() }
+    }
+
+    fn cle(&self) -> String {
+        cle(self.appid, self.game_id.as_deref())
+    }
+}
+
+/// Ce qui identifie un jeu dans le carnet, Steam ou pas.
+fn cle(appid: Option<u32>, game_id: Option<&str>) -> String {
+    match (game_id, appid) {
+        (Some(id), _) => id.to_string(),
+        (None, Some(appid)) => appid.to_string(),
+        (None, None) => String::new(),
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Partie {
-    /// Identifiant stable côté PC (`appid-début`) : le site s'en sert pour
-    /// ne jamais enregistrer deux fois la même partie.
+    /// Identifiant stable côté PC (`appid-début`, ou `fiche-début` hors
+    /// Steam) : le site s'en sert pour ne jamais enregistrer deux fois la
+    /// même partie.
     pub id: String,
-    pub appid: u32,
+    /// Absent pour un jeu hors Steam. Un carnet écrit par une version
+    /// d'avant (où il était toujours là) se relit tel quel.
+    #[serde(default)]
+    pub appid: Option<u32>,
+    /// La fiche du jeu sur le site, pour un jeu hors Steam.
+    #[serde(default)]
+    pub game_id: Option<String>,
     pub title: String,
     /// Millisecondes depuis 1970.
     pub started_at: i64,
@@ -41,14 +81,20 @@ pub struct Carnet {
     pub terminees: Vec<Partie>,
 }
 
+impl Partie {
+    fn cle(&self) -> String {
+        cle(self.appid, self.game_id.as_deref())
+    }
+}
+
 impl Carnet {
     /// Fait avancer le carnet d'un relevé. `vus` = les jeux qui tournent en
     /// ce moment. Rend `true` si au moins une partie vient de se terminer.
-    pub fn avancer(&mut self, vus: &[(u32, String)], maintenant: i64) -> bool {
+    pub fn avancer(&mut self, vus: &[Vu], maintenant: i64) -> bool {
         let mut fini = false;
         let mut encore = Vec::new();
         for mut partie in std::mem::take(&mut self.en_cours) {
-            if vus.iter().any(|(appid, _)| *appid == partie.appid) {
+            if vus.iter().any(|vu| vu.cle() == partie.cle()) {
                 partie.ended_at = maintenant;
                 encore.push(partie);
             } else if partie.ended_at - partie.started_at >= DUREE_MINIMALE_MS {
@@ -56,12 +102,13 @@ impl Carnet {
                 fini = true;
             }
         }
-        for (appid, title) in vus {
-            if !encore.iter().any(|p| p.appid == *appid) {
+        for vu in vus {
+            if !encore.iter().any(|p: &Partie| p.cle() == vu.cle()) {
                 encore.push(Partie {
-                    id: format!("{appid}-{maintenant}"),
-                    appid: *appid,
-                    title: title.clone(),
+                    id: format!("{}-{maintenant}", vu.cle()),
+                    appid: vu.appid,
+                    game_id: vu.game_id.clone(),
+                    title: vu.title.clone(),
                     started_at: maintenant,
                     ended_at: maintenant,
                 });
@@ -111,7 +158,7 @@ impl Parties {
     }
 
     /// Un relevé de la boucle. Rend `true` si une partie vient de se finir.
-    pub fn relever(&self, vus: &[(u32, String)], maintenant: i64) -> bool {
+    pub fn relever(&self, vus: &[Vu], maintenant: i64) -> bool {
         let (fini, a_ecrire) = {
             let mut carnet = self.carnet.lock().unwrap();
             let avant = carnet.en_cours.len();
@@ -170,34 +217,57 @@ pub fn normaliser(chemin: &Path) -> String {
     texte
 }
 
-/// Les jeux qui tournent : ceux dont un programme vit dans leur dossier.
-/// `dossiers` = (appid, titre, dossier déjà normalisé).
-pub fn jeux_qui_tournent(systeme: &mut System, dossiers: &[(u32, String, String)]) -> Vec<(u32, String)> {
+/// Un programme lancé, réduit à ce qui sert à reconnaître un jeu.
+#[derive(Debug, Clone, Default)]
+pub struct Programme {
+    /// Chemin de l'exécutable, normalisé.
+    pub exe: String,
+    /// Nom du programme, en minuscules (`javaw.exe`).
+    pub nom: String,
+    /// Ligne de commande, en minuscules, barres obliques comprises.
+    pub commande: String,
+}
+
+/// Les programmes lancés en ce moment.
+pub fn programmes(systeme: &mut System) -> Vec<Programme> {
     systeme.refresh_processes_specifics(
         ProcessesToUpdate::All,
         true,
-        ProcessRefreshKind::nothing().with_exe(UpdateKind::OnlyIfNotSet),
+        ProcessRefreshKind::nothing()
+            .with_exe(UpdateKind::OnlyIfNotSet)
+            .with_cmd(UpdateKind::OnlyIfNotSet),
     );
-    let chemins: Vec<String> = systeme
+    systeme
         .processes()
         .values()
-        .filter_map(|p| p.exe())
-        .map(normaliser)
-        .collect();
-    reconnaitre(&chemins, dossiers)
+        .map(|p| Programme {
+            exe: p.exe().map(normaliser).unwrap_or_default(),
+            nom: p.name().to_string_lossy().to_lowercase(),
+            commande: p
+                .cmd()
+                .iter()
+                .map(|a| a.to_string_lossy())
+                .collect::<Vec<_>>()
+                .join(" ")
+                .replace('\\', "/")
+                .to_lowercase(),
+        })
+        .collect()
 }
 
-/// La partie pure de la reconnaissance, testable sans vrais programmes.
-pub fn reconnaitre(chemins: &[String], dossiers: &[(u32, String, String)]) -> Vec<(u32, String)> {
-    let mut vus: Vec<(u32, String)> = Vec::new();
+/// Les jeux Steam qui tournent : ceux dont un programme vit dans leur
+/// dossier. `dossiers` = (appid, titre, dossier déjà normalisé).
+pub fn reconnaitre(programmes: &[Programme], dossiers: &[(u32, String, String)]) -> Vec<Vu> {
+    let chemins: Vec<&str> = programmes.iter().map(|p| p.exe.as_str()).filter(|c| !c.is_empty()).collect();
+    let mut vus: Vec<Vu> = Vec::new();
     for (appid, titre, dossier) in dossiers {
         // Un dossier vide (manifeste sans installdir) serait le dossier
         // `common` entier : il reconnaîtrait n'importe quel jeu.
         if dossier.ends_with("/common/") {
             continue;
         }
-        if chemins.iter().any(|c| c.starts_with(dossier.as_str())) && !vus.iter().any(|(a, _)| a == appid) {
-            vus.push((*appid, titre.clone()));
+        if chemins.iter().any(|c| c.starts_with(dossier.as_str())) && !vus.iter().any(|v| v.appid == Some(*appid)) {
+            vus.push(Vu::steam(*appid, titre.clone()));
         }
     }
     vus
@@ -216,8 +286,12 @@ mod tests {
 
     const MIN: i64 = 60_000;
 
-    fn vu(appid: u32) -> (u32, String) {
-        (appid, format!("Jeu {appid}"))
+    fn vu(appid: u32) -> Vu {
+        Vu::steam(appid, format!("Jeu {appid}"))
+    }
+
+    fn programme(exe: &str) -> Programme {
+        Programme { exe: normaliser(Path::new(exe)), ..Default::default() }
     }
 
     #[test]
@@ -249,7 +323,7 @@ mod tests {
         assert!(c.avancer(&[vu(20)], 11 * MIN));
         assert_eq!(c.terminees.len(), 1);
         assert_eq!(c.en_cours.len(), 1);
-        assert_eq!(c.en_cours[0].appid, 20);
+        assert_eq!(c.en_cours[0].appid, Some(20));
     }
 
     #[test]
@@ -279,11 +353,11 @@ mod tests {
             (20, "FooBar".to_string(), normaliser(Path::new("D:\\SteamLibrary\\steamapps\\common\\FooBar"))),
             (30, "Vide".to_string(), normaliser(Path::new("D:\\SteamLibrary\\steamapps\\common\\"))),
         ];
-        let chemins = vec![
-            normaliser(Path::new("d:\\steamlibrary\\steamapps\\common\\FooBar\\bin\\game.exe")),
-            normaliser(Path::new("C:\\Windows\\explorer.exe")),
+        let programmes = vec![
+            programme("d:\\steamlibrary\\steamapps\\common\\FooBar\\bin\\game.exe"),
+            programme("C:\\Windows\\explorer.exe"),
         ];
-        assert_eq!(reconnaitre(&chemins, &dossiers), vec![(20, "FooBar".to_string())]);
+        assert_eq!(reconnaitre(&programmes, &dossiers), vec![Vu::steam(20, "FooBar")]);
     }
 
     #[test]
@@ -302,4 +376,23 @@ mod tests {
         let _ = fs::remove_file(fichier);
     }
 
+    #[test]
+    fn un_jeu_hors_steam_a_sa_propre_partie() {
+        let mut c = Carnet::default();
+        let mc = Vu::hors_steam("fiche-mc", "Minecraft");
+        c.avancer(&[mc.clone(), vu(10)], 0);
+        c.avancer(&[mc.clone(), vu(10)], 20 * MIN);
+        assert!(c.avancer(&[vu(10)], 21 * MIN));
+        let p = &c.terminees[0];
+        assert_eq!(p.id, "fiche-mc-0");
+        assert_eq!((p.appid, p.game_id.as_deref()), (None, Some("fiche-mc")));
+    }
+
+    #[test]
+    fn un_carnet_d_avant_se_relit() {
+        let ancien = r#"{"en_cours":[],"terminees":[{"id":"10-0","appid":10,"title":"Foo","started_at":0,"ended_at":120000}]}"#;
+        let c: Carnet = serde_json::from_str(ancien).unwrap();
+        assert_eq!(c.terminees[0].appid, Some(10));
+        assert_eq!(c.terminees[0].game_id, None);
+    }
 }

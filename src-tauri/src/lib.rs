@@ -6,15 +6,21 @@
 //! - les jeux Steam installés (steam.rs), que le site propose d'importer ;
 //! - les parties jouées (parties.rs), que le site enregistre — ce qui
 //!   marque aussi la présence aux soirées ;
+//! - les jeux hors Steam (hors_steam.rs) : un programme choisi par la
+//!   personne, que l'app lance et reconnaît ;
+//! - le mode invisible (reglages.rs) : la bande ne voit plus à quoi on joue ;
 //! - une icône dans la barre des tâches, le lancement avec Windows, et les
 //!   liens externes renvoyés vers le navigateur (liens.rs) ;
 //! - les mises à jour, téléchargées et installées toutes seules depuis les
 //!   versions publiées sur GitHub.
 
+mod hors_steam;
 mod liens;
 mod parties;
+mod reglages;
 mod steam;
 
+use std::path::Path;
 use std::time::Duration;
 use tauri::{
     menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem},
@@ -23,6 +29,7 @@ use tauri::{
     AppHandle, Emitter, Manager, Url, WebviewWindowBuilder, WindowEvent,
 };
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
+use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_updater::UpdaterExt;
 
 /// Un relevé des programmes lancés toutes les 30 secondes : assez fin pour
@@ -77,10 +84,78 @@ fn parties_envoyees(carnet: tauri::State<'_, parties::Parties>, ids: Vec<String>
     carnet.envoyees(&ids)
 }
 
-/// Les jeux qui tournent en ce moment (pour un futur « en jeu » sur le site).
+/// Les jeux qui tournent en ce moment : le site les annonce à la bande
+/// (« en jeu »), sauf en mode invisible.
 #[tauri::command]
 fn parties_en_cours(carnet: tauri::State<'_, parties::Parties>) -> Vec<parties::Partie> {
     carnet.en_cours()
+}
+
+/// Le mode invisible est-il coché dans le menu de l'icône ?
+#[tauri::command]
+fn presence_invisible(reglages: tauri::State<'_, reglages::Reglages>) -> bool {
+    reglages.invisible()
+}
+
+/// Les jeux hors Steam associés sur ce PC (sans leur chemin complet).
+#[tauri::command]
+fn jeux_hors_steam(hs: tauri::State<'_, hors_steam::HorsSteam>) -> Vec<hors_steam::LienVisible> {
+    hs.visibles()
+}
+
+/// Ouvre la fenêtre « Ouvrir » de Windows pour choisir le programme d'un
+/// jeu. Rien si la personne annule.
+#[tauri::command]
+async fn choisir_programme(app: AppHandle) -> Option<hors_steam::Choix> {
+    let fichier = app
+        .dialog()
+        .file()
+        .set_title("Le programme qui lance le jeu")
+        .add_filter("Programme", &["exe"])
+        .blocking_pick_file()?;
+    let chemin = fichier.into_path().ok()?;
+    app.state::<hors_steam::HorsSteam>().retenir_choix(&chemin.to_string_lossy());
+    Some(hors_steam::choix(&chemin))
+}
+
+/// Associe le programme choisi à la fiche d'un jeu.
+#[tauri::command]
+fn associer_jeu_hors_steam(
+    hs: tauri::State<'_, hors_steam::HorsSteam>,
+    game_id: String,
+    title: String,
+    chemin: String,
+    instance_prism: Option<String>,
+) -> Result<hors_steam::LienVisible, String> {
+    hs.associer(hors_steam::Lien { game_id, title, chemin, instance_prism })
+}
+
+#[tauri::command]
+fn retirer_jeu_hors_steam(hs: tauri::State<'_, hors_steam::HorsSteam>, game_id: String) {
+    hs.retirer(&game_id)
+}
+
+/// Lance un jeu hors Steam associé, et le connecte à un serveur quand son
+/// launcher sait le faire (Prism Launcher pour Minecraft).
+#[tauri::command]
+fn lancer_jeu_hors_steam(
+    hs: tauri::State<'_, hors_steam::HorsSteam>,
+    game_id: String,
+    serveur: Option<String>,
+) -> Result<(), String> {
+    let lien = hs
+        .trouver(&game_id)
+        .ok_or_else(|| "Ce jeu n'est pas associé sur ce PC.".to_string())?;
+    let chemin = Path::new(&lien.chemin);
+    let mut commande = std::process::Command::new(chemin);
+    commande.args(hors_steam::arguments(&lien, serveur.as_deref()));
+    if let Some(dossier) = chemin.parent() {
+        commande.current_dir(dossier);
+    }
+    commande
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("Impossible de lancer {} : {e}", hors_steam::nom_du_programme(chemin)))
 }
 
 /// La boucle qui regarde quels jeux tournent, dans son propre fil pour ne
@@ -103,12 +178,24 @@ fn demarrer_la_surveillance(app: &AppHandle) {
             }
             tour = tour.wrapping_add(1);
 
-            let vus = parties::jeux_qui_tournent(&mut systeme, &dossiers);
+            let programmes = parties::programmes(&mut systeme);
+            let mut vus = parties::reconnaitre(&programmes, &dossiers);
+            vus.extend(hors_steam::reconnaitre(
+                &app.state::<hors_steam::HorsSteam>().liens(),
+                &programmes,
+            ));
             let carnet = app.state::<parties::Parties>();
+            let avant: Vec<String> = carnet.en_cours().into_iter().map(|p| p.id).collect();
             if carnet.relever(&vus, parties::maintenant_ms()) {
                 // Le site écoute cet événement pour envoyer tout de suite ;
                 // s'il ne l'entend pas, il repasse de lui-même chaque minute.
                 let _ = app.emit("parties", ());
+            }
+            let apres: Vec<String> = carnet.en_cours().into_iter().map(|p| p.id).collect();
+            if avant != apres {
+                // Un jeu vient d'être lancé ou fermé : le site met à jour
+                // « en jeu » pour la bande sans attendre.
+                let _ = app.emit("en-cours", ());
             }
             std::thread::sleep(INTERVALLE);
         }
@@ -179,12 +266,16 @@ fn creer_la_fenetre(app: &AppHandle, visible: bool) -> tauri::Result<()> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_autostart::init(
             MacosLauncher::LaunchAgent,
             Some(vec![ARG_DEMARRAGE]),
         ))
         .setup(|app| {
             let lance_par_windows = std::env::args().any(|a| a == ARG_DEMARRAGE);
+            let donnees = app.path().app_data_dir().ok();
+            app.manage(reglages::Reglages::charger(donnees.as_ref().map(|d| d.join("reglages.json"))));
+            app.manage(hors_steam::HorsSteam::charger(donnees.as_ref().map(|d| d.join("hors-steam.json"))));
             creer_la_fenetre(app.handle(), !lance_par_windows)?;
 
             let ouvrir = MenuItem::with_id(app, "ouvrir", "Ouvrir SQUAD", true, None::<&str>)?;
@@ -194,6 +285,16 @@ pub fn run() {
                 "Lancer avec Windows",
                 true,
                 app.autolaunch().is_enabled().unwrap_or(false),
+                None::<&str>,
+            )?;
+            // Invisible : l'app continue de compter le temps de jeu, mais le
+            // site n'annonce plus à la bande à quoi on joue.
+            let invisible = CheckMenuItem::with_id(
+                app,
+                "invisible",
+                "Invisible pour la bande",
+                true,
+                app.state::<reglages::Reglages>().invisible(),
                 None::<&str>,
             )?;
             let separateur = PredefinedMenuItem::separator(app)?;
@@ -207,9 +308,13 @@ pub fn run() {
                 None::<&str>,
             )?;
             let quitter = MenuItem::with_id(app, "quitter", "Quitter", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&ouvrir, &demarrage, &separateur, &version, &quitter])?;
+            let menu = Menu::with_items(
+                app,
+                &[&ouvrir, &demarrage, &invisible, &separateur, &version, &quitter],
+            )?;
 
             let case_demarrage = demarrage.clone();
+            let case_invisible = invisible.clone();
             TrayIconBuilder::with_id("squad")
                 .icon(app.default_window_icon().unwrap().clone())
                 .tooltip("SQUAD")
@@ -229,6 +334,11 @@ pub fn run() {
                             app.autolaunch().enable()
                         };
                         let _ = case_demarrage.set_checked(app.autolaunch().is_enabled().unwrap_or(false));
+                    }
+                    "invisible" => {
+                        let etat = app.state::<reglages::Reglages>().basculer_invisible();
+                        let _ = case_invisible.set_checked(etat);
+                        let _ = app.emit("invisible", etat);
                     }
                     "quitter" => app.exit(0),
                     _ => {}
@@ -262,7 +372,13 @@ pub fn run() {
             jeux_installes,
             parties_a_envoyer,
             parties_envoyees,
-            parties_en_cours
+            parties_en_cours,
+            presence_invisible,
+            jeux_hors_steam,
+            choisir_programme,
+            associer_jeu_hors_steam,
+            retirer_jeu_hors_steam,
+            lancer_jeu_hors_steam
         ])
         .run(tauri::generate_context!())
         .expect("SQUAD n'a pas pu démarrer");
