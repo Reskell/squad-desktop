@@ -1,25 +1,26 @@
 //! SQUAD — l'app de bureau.
 //!
-//! Étape 1 : une fenêtre qui affiche le site SQUAD//LOG en ligne, et une
-//! icône dans la barre des tâches.
-//! Étape 3 : la commande `jeux_installes`, que le site appelle pour proposer
-//! les jeux Steam installés sur ce PC.
-//! Étape 4 : la surveillance des parties (voir parties.rs) — le site les
-//! récupère et les enregistre, ce qui marque aussi la présence aux soirées.
-//! Le site reste le cerveau : l'app ne
-//! réaffiche jamais ses propres versions des pages, elle ajoutera seulement
-//! ce qui demande la machine (détection des jeux, présence, lancement).
+//! La fenêtre affiche le site SQUAD//LOG en ligne : le site reste le
+//! cerveau, l'app ne réaffiche jamais ses propres versions des pages. Elle
+//! ajoute seulement ce qui demande la machine :
+//! - les jeux Steam installés (steam.rs), que le site propose d'importer ;
+//! - les parties jouées (parties.rs), que le site enregistre — ce qui
+//!   marque aussi la présence aux soirées ;
+//! - une icône dans la barre des tâches, le lancement avec Windows, et les
+//!   liens externes renvoyés vers le navigateur (liens.rs).
 
+mod liens;
 mod parties;
 mod steam;
 
 use std::time::Duration;
-
 use tauri::{
-    menu::{Menu, MenuItem},
+    menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Emitter, Manager, WindowEvent,
+    webview::NewWindowResponse,
+    AppHandle, Emitter, Manager, Url, WebviewWindowBuilder, WindowEvent,
 };
+use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 
 /// Un relevé des programmes lancés toutes les 30 secondes : assez fin pour
 /// la règle des 15 minutes de présence, invisible pour le processeur.
@@ -27,6 +28,9 @@ const INTERVALLE: Duration = Duration::from_secs(30);
 /// Relire la liste des jeux installés toutes les 20 relevés (10 minutes),
 /// pour reconnaître un jeu installé pendant que l'app tourne.
 const RELIRE_LES_JEUX_TOUS_LES: u32 = 20;
+/// Passé par Windows quand l'app démarre avec la session : elle se lance
+/// alors cachée dans la barre des tâches, sans ouvrir de fenêtre.
+const ARG_DEMARRAGE: &str = "--au-demarrage";
 
 /// Ramène la fenêtre au premier plan, qu'elle soit cachée ou réduite.
 fn montrer(app: &AppHandle) {
@@ -35,6 +39,15 @@ fn montrer(app: &AppHandle) {
         let _ = fenetre.unminimize();
         let _ = fenetre.set_focus();
     }
+}
+
+/// Ouvre une adresse dans le navigateur habituel de la personne.
+fn ouvrir_dans_le_navigateur(url: &Url) {
+    let _ = tauri_plugin_opener::open_url(url.as_str(), None::<&str>);
+}
+
+fn reste_dans_la_fenetre(url: &Url) -> bool {
+    liens::reste_dans_la_fenetre(url.scheme(), url.host_str().unwrap_or(""), url.path())
 }
 
 /// Les jeux Steam installés sur ce PC. L'app ne fait que lire : c'est le
@@ -95,13 +108,64 @@ fn demarrer_la_surveillance(app: &AppHandle) {
     });
 }
 
+/// La fenêtre, construite ici plutôt que par la configuration pour pouvoir
+/// décider où vont les liens. Cachée quand Windows lance l'app au démarrage.
+fn creer_la_fenetre(app: &AppHandle, visible: bool) -> tauri::Result<()> {
+    let config = app
+        .config()
+        .app
+        .windows
+        .iter()
+        .find(|w| w.label == "main")
+        .cloned()
+        .expect("la fenêtre « main » manque dans tauri.conf.json");
+
+    WebviewWindowBuilder::from_config(app, &config)?
+        .visible(visible)
+        // Une page qui remplace celle de la fenêtre (lien normal) : hors du
+        // site et de la connexion, elle part dans le navigateur.
+        .on_navigation(|url| {
+            if reste_dans_la_fenetre(url) {
+                true
+            } else {
+                ouvrir_dans_le_navigateur(url);
+                false
+            }
+        })
+        // Un lien « nouvel onglet » : toujours le navigateur, jamais une
+        // seconde fenêtre SQUAD sans barre d'adresse.
+        .on_new_window(|url, _| {
+            ouvrir_dans_le_navigateur(&url);
+            NewWindowResponse::Deny
+        })
+        .build()?;
+    Ok(())
+}
+
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_autostart::init(
+            MacosLauncher::LaunchAgent,
+            Some(vec![ARG_DEMARRAGE]),
+        ))
         .setup(|app| {
-            let ouvrir = MenuItem::with_id(app, "ouvrir", "Ouvrir SQUAD", true, None::<&str>)?;
-            let quitter = MenuItem::with_id(app, "quitter", "Quitter", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&ouvrir, &quitter])?;
+            let lance_par_windows = std::env::args().any(|a| a == ARG_DEMARRAGE);
+            creer_la_fenetre(app.handle(), !lance_par_windows)?;
 
+            let ouvrir = MenuItem::with_id(app, "ouvrir", "Ouvrir SQUAD", true, None::<&str>)?;
+            let demarrage = CheckMenuItem::with_id(
+                app,
+                "demarrage",
+                "Lancer avec Windows",
+                true,
+                app.autolaunch().is_enabled().unwrap_or(false),
+                None::<&str>,
+            )?;
+            let separateur = PredefinedMenuItem::separator(app)?;
+            let quitter = MenuItem::with_id(app, "quitter", "Quitter", true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&ouvrir, &demarrage, &separateur, &quitter])?;
+
+            let case_demarrage = demarrage.clone();
             TrayIconBuilder::with_id("squad")
                 .icon(app.default_window_icon().unwrap().clone())
                 .tooltip("SQUAD")
@@ -109,8 +173,19 @@ pub fn run() {
                 // Clic gauche = ouvrir, clic droit = le menu : le réflexe
                 // habituel des icônes de la barre des tâches sous Windows.
                 .show_menu_on_left_click(false)
-                .on_menu_event(|app, event| match event.id.as_ref() {
+                .on_menu_event(move |app, event| match event.id.as_ref() {
                     "ouvrir" => montrer(app),
+                    "demarrage" => {
+                        // On repart de l'état réel plutôt que de la case :
+                        // si Windows refuse, la case doit dire la vérité.
+                        let actif = app.autolaunch().is_enabled().unwrap_or(false);
+                        let _ = if actif {
+                            app.autolaunch().disable()
+                        } else {
+                            app.autolaunch().enable()
+                        };
+                        let _ = case_demarrage.set_checked(app.autolaunch().is_enabled().unwrap_or(false));
+                    }
                     "quitter" => app.exit(0),
                     _ => {}
                 })
@@ -130,8 +205,8 @@ pub fn run() {
             Ok(())
         })
         // Fermer la fenêtre la cache au lieu de quitter : l'app doit rester
-        // en vie pour voir les jeux lancés. On quitte vraiment
-        // depuis le menu de l'icône.
+        // en vie pour voir les jeux lancés. On quitte vraiment depuis le
+        // menu de l'icône.
         .on_window_event(|fenetre, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 let _ = fenetre.hide();
