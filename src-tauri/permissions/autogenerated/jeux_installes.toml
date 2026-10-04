@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-jeux-installes"
+description = "Enables the jeux_installes command without any pre-configured scope."
+commands.allow = ["jeux_installes"]
+
+[[permission]]
+identifier = "deny-jeux-installes"
+description = "Denies the jeux_installes command without any pre-configured scope."
+commands.deny = ["jeux_installes"]

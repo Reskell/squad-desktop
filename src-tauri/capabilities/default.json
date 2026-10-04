@@ -1,11 +1,17 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Droits de la fenêtre principale",
+  "description": "Droits de la fenêtre principale : seul le site SQUAD//LOG peut lire les jeux installés",
   "windows": [
     "main"
   ],
+  "remote": {
+    "urls": [
+      "https://squadlog-three.vercel.app/*"
+    ]
+  },
   "permissions": [
-    "core:default"
+    "core:default",
+    "allow-jeux-installes"
   ]
 }
