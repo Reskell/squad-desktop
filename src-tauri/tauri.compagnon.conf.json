@@ -1,0 +1,14 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "SQUAD Compagnon",
+  "mainBinaryName": "squad-compagnon",
+  "identifier": "fr.squad.compagnon",
+  "app": {
+    "windows": []
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": ["https://squadlog-three.vercel.app/api/compagnon/latest"]
+    }
+  }
+}

@@ -15,6 +15,10 @@
 //!   liens externes renvoyés vers le navigateur (liens.rs) ;
 //! - les mises à jour, téléchargées et installées toutes seules depuis les
 //!   versions publiées sur GitHub.
+//!
+//! Le même code donne aussi « SQUAD Compagnon », le compagnon LoL seul
+//! (compilé avec SQUAD_COMPAGNON_SEUL, voir tauri.compagnon.conf.json) :
+//! pas de fenêtre SQUAD, seulement celle du compagnon et l'icône.
 
 mod hors_steam;
 mod liens;
@@ -48,9 +52,18 @@ const ARG_DEMARRAGE: &str = "--au-demarrage";
 /// les six heures : l'app reste souvent ouverte des jours entiers.
 const PREMIERE_RECHERCHE: Duration = Duration::from_secs(60);
 const ENTRE_DEUX_RECHERCHES: Duration = Duration::from_secs(6 * 60 * 60);
+/// Vrai pour « SQUAD Compagnon », le compagnon LoL téléchargé seul : la
+/// publication le compile avec la variable SQUAD_COMPAGNON_SEUL.
+const SEUL: bool = option_env!("SQUAD_COMPAGNON_SEUL").is_some();
+/// Le nom affiché dans les messages : celui de l'app installée.
+const NOM: &str = if SEUL { "SQUAD Compagnon" } else { "SQUAD" };
 
 /// Ramène la fenêtre au premier plan, qu'elle soit cachée ou réduite.
 fn montrer(app: &AppHandle) {
+    if SEUL {
+        let _ = creer_le_compagnon(app);
+        return;
+    }
     if let Some(fenetre) = app.get_webview_window("main") {
         let _ = fenetre.show();
         let _ = fenetre.unminimize();
@@ -223,7 +236,8 @@ fn demarrer_la_surveillance(app: &AppHandle) {
             suivi.noter(acces);
             if maintenant && !avant && app.state::<reglages::Reglages>().compagnon_auto() {
                 let _ = creer_le_compagnon(&app);
-            } else if !maintenant && avant {
+            } else if !maintenant && avant && !SEUL {
+                // Seul, le compagnon EST l'app : il reste ouvert.
                 if let Some(fenetre) = app.get_webview_window(COMPAGNON) {
                     let _ = fenetre.close();
                 }
@@ -281,7 +295,7 @@ fn demarrer_les_mises_a_jour(app: &AppHandle) {
 
 /// Une petite fenêtre de message, sans bloquer l'app.
 fn prevenir(app: &AppHandle, texte: String) {
-    app.dialog().message(texte).title("SQUAD").show(|_| {});
+    app.dialog().message(texte).title(NOM).show(|_| {});
 }
 
 /// « Vérifier les mises à jour », depuis le menu de l'icône : la même
@@ -299,11 +313,11 @@ fn verifier_maintenant(app: &AppHandle) {
             Err(e) => return prevenir(&app, format!("Impossible de chercher une mise à jour : {e}")),
         };
         let Some(mise_a_jour) = trouvee else {
-            return prevenir(&app, format!("SQUAD est à jour (version {}).", app.package_info().version));
+            return prevenir(&app, format!("{NOM} est à jour (version {}).", app.package_info().version));
         };
         prevenir(
             &app,
-            format!("Version {} trouvée : installation, SQUAD va redémarrer.", mise_a_jour.version),
+            format!("Version {} trouvée : installation, {NOM} va redémarrer.", mise_a_jour.version),
         );
         if let Err(e) = tauri::async_runtime::block_on(mise_a_jour.download_and_install(|_, _| {}, || {})) {
             prevenir(&app, format!("La mise à jour a échoué : {e}"));
@@ -398,7 +412,14 @@ pub fn run() {
             app.manage(reglages::Reglages::charger(donnees.as_ref().map(|d| d.join("reglages.json"))));
             app.manage(hors_steam::HorsSteam::charger(donnees.as_ref().map(|d| d.join("hors-steam.json"))));
             app.manage(lol::Lol::nouveau());
-            creer_la_fenetre(app.handle(), !lance_par_windows)?;
+            if SEUL {
+                // Au démarrage de Windows, il attend LoL sans rien ouvrir.
+                if !lance_par_windows {
+                    creer_le_compagnon(app.handle())?;
+                }
+            } else {
+                creer_la_fenetre(app.handle(), !lance_par_windows)?;
+            }
 
             let ouvrir = MenuItem::with_id(app, "ouvrir", "Ouvrir SQUAD", true, None::<&str>)?;
             let demarrage = CheckMenuItem::with_id(
@@ -434,33 +455,42 @@ pub fn run() {
             let version = MenuItem::with_id(
                 app,
                 "version",
-                format!("SQUAD {}", app.package_info().version),
+                format!("{NOM} {}", app.package_info().version),
                 false,
                 None::<&str>,
             )?;
             let verifier = MenuItem::with_id(app, "verifier", "Vérifier les mises à jour", true, None::<&str>)?;
             let quitter = MenuItem::with_id(app, "quitter", "Quitter", true, None::<&str>)?;
-            let menu = Menu::with_items(
-                app,
-                &[
-                    &ouvrir,
-                    &compagnon,
-                    &demarrage,
-                    &invisible,
-                    &compagnon_auto,
-                    &separateur,
-                    &version,
-                    &verifier,
-                    &quitter,
-                ],
-            )?;
+            // Seul, ni « Ouvrir SQUAD » ni « Invisible » : il n'y a ni site
+            // complet ni présence à cacher.
+            let menu = if SEUL {
+                Menu::with_items(
+                    app,
+                    &[&compagnon, &demarrage, &compagnon_auto, &separateur, &version, &verifier, &quitter],
+                )?
+            } else {
+                Menu::with_items(
+                    app,
+                    &[
+                        &ouvrir,
+                        &compagnon,
+                        &demarrage,
+                        &invisible,
+                        &compagnon_auto,
+                        &separateur,
+                        &version,
+                        &verifier,
+                        &quitter,
+                    ],
+                )?
+            };
 
             let case_demarrage = demarrage.clone();
             let case_invisible = invisible.clone();
             let case_compagnon = compagnon_auto.clone();
             TrayIconBuilder::with_id("squad")
                 .icon(app.default_window_icon().unwrap().clone())
-                .tooltip("SQUAD")
+                .tooltip(NOM)
                 .menu(&menu)
                 // Clic gauche = ouvrir, clic droit = le menu : le réflexe
                 // habituel des icônes de la barre des tâches sous Windows.
@@ -515,9 +545,10 @@ pub fn run() {
         // menu de l'icône.
         .on_window_event(|fenetre, event| {
             // Seule la fenêtre principale se cache au lieu de fermer : le
-            // compagnon, lui, se ferme pour de bon.
+            // compagnon, lui, se ferme pour de bon — sauf quand il est
+            // l'app à lui tout seul.
             if let WindowEvent::CloseRequested { api, .. } = event {
-                if fenetre.label() == "main" {
+                if fenetre.label() == "main" || (SEUL && fenetre.label() == COMPAGNON) {
                     let _ = fenetre.hide();
                     api.prevent_close();
                 }
@@ -540,5 +571,5 @@ pub fn run() {
             lol_importer_sorts
         ])
         .run(tauri::generate_context!())
-        .expect("SQUAD n'a pas pu démarrer");
+        .expect("l'app n'a pas pu démarrer");
 }
