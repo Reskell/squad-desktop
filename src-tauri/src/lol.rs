@@ -23,7 +23,15 @@ pub struct PageDeRunes {
     pub principal: u32,
     pub secondaire: u32,
     pub perks: Vec<u32>,
+    /// Quelle page remplacer : "courante" (la page en cours, par défaut)
+    /// ou "squad" (une page à part, nommée « SQUAD · … », qui laisse les
+    /// pages de la personne intactes).
+    #[serde(default)]
+    pub cible: Option<String>,
 }
+
+/// Le début du nom des pages créées par le compagnon.
+const PREFIXE_PAGE: &str = "SQUAD · ";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccesClient {
@@ -155,9 +163,23 @@ impl Lol {
         if page.perks.len() != 9 {
             return Err("Page de runes incomplète.".into());
         }
-        // La page en cours, si on peut la modifier, laisse sa place (le
-        // client limite le nombre de pages).
-        if let Ok(Some(actuelle)) = self.envoyer(reqwest::Method::GET, "/lol-perks/v1/currentpage", None).await {
+        if page.cible.as_deref() == Some("squad") {
+            // Une page à part : on remplace l'ancienne page SQUAD, jamais
+            // celles de la personne.
+            if let Ok(Some(Value::Array(pages))) = self.envoyer(reqwest::Method::GET, "/lol-perks/v1/pages", None).await {
+                for p in pages {
+                    let a_nous = p.get("name").and_then(Value::as_str).is_some_and(|n| n.starts_with(PREFIXE_PAGE));
+                    let modifiable = p.get("isEditable").and_then(Value::as_bool).unwrap_or(false);
+                    if let (true, true, Some(id)) = (a_nous, modifiable, p.get("id").and_then(Value::as_u64)) {
+                        let _ = self
+                            .envoyer(reqwest::Method::DELETE, &format!("/lol-perks/v1/pages/{id}"), None)
+                            .await;
+                    }
+                }
+            }
+        } else if let Ok(Some(actuelle)) = self.envoyer(reqwest::Method::GET, "/lol-perks/v1/currentpage", None).await {
+            // La page en cours, si on peut la modifier, laisse sa place (le
+            // client limite le nombre de pages).
             let modifiable = actuelle.get("isEditable").and_then(Value::as_bool).unwrap_or(false);
             if let (true, Some(id)) = (modifiable, actuelle.get("id").and_then(Value::as_u64)) {
                 let _ = self
@@ -166,13 +188,22 @@ impl Lol {
             }
         }
         let corps = serde_json::json!({
-            "name": format!("SQUAD · {}", page.nom.chars().take(20).collect::<String>()),
+            "name": format!("{PREFIXE_PAGE}{}", page.nom.chars().take(20).collect::<String>()),
             "primaryStyleId": page.principal,
             "subStyleId": page.secondaire,
             "selectedPerkIds": page.perks,
             "current": true
         });
-        self.envoyer(reqwest::Method::POST, "/lol-perks/v1/pages", Some(corps)).await.map(|_| ())
+        self.envoyer(reqwest::Method::POST, "/lol-perks/v1/pages", Some(corps))
+            .await
+            .map(|_| ())
+            .map_err(|e| {
+                if page.cible.as_deref() == Some("squad") {
+                    format!("{e} (plus de place pour une page ? Libère-en une, ou choisis « page en cours » dans les réglages.)")
+                } else {
+                    e
+                }
+            })
     }
 
     /// Choisit les deux sorts d'invocateur pendant la sélection.
