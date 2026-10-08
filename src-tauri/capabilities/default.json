@@ -3,7 +3,8 @@
   "identifier": "default",
   "description": "Droits de la fenêtre principale : seul le site SQUAD//LOG peut lire les jeux installés et les parties, et lancer les jeux hors Steam associés",
   "windows": [
-    "main"
+    "main",
+    "compagnon"
   ],
   "remote": {
     "urls": [
@@ -21,6 +22,8 @@
     "allow-choisir-programme",
     "allow-associer-jeu-hors-steam",
     "allow-retirer-jeu-hors-steam",
-    "allow-lancer-jeu-hors-steam"
+    "allow-lancer-jeu-hors-steam",
+    "allow-lol-etat",
+    "allow-ouvrir-compagnon"
   ]
 }

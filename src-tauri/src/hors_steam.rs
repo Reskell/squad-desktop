@@ -330,6 +330,7 @@ mod tests {
             exe: normaliser(Path::new(chemin)),
             nom: nom_du_programme(Path::new(chemin)).to_lowercase(),
             commande: String::new(),
+            commande_brute: String::new(),
         }
     }
 
@@ -358,6 +359,7 @@ mod tests {
             exe: normaliser(Path::new("C:\\Program Files\\Java\\bin\\javaw.exe")),
             nom: "javaw.exe".into(),
             commande: "javaw -djava.library.path=c:/users/x/appdata/roaming/prismlauncher/instances/1.21/natives".into(),
+            commande_brute: String::new(),
         };
         assert!(tourne(&l, &[prism_seul, java]));
     }

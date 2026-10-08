@@ -9,6 +9,8 @@
 //! - les jeux hors Steam (hors_steam.rs) : un programme choisi par la
 //!   personne, que l'app lance et reconnaît ;
 //! - le mode invisible (reglages.rs) : la bande ne voit plus à quoi on joue ;
+//! - le compagnon LoL (lol.rs) : une seconde fenêtre, ouverte avec le client
+//!   LoL, qui lit la sélection des champions et la partie en cours ;
 //! - une icône dans la barre des tâches, le lancement avec Windows, et les
 //!   liens externes renvoyés vers le navigateur (liens.rs) ;
 //! - les mises à jour, téléchargées et installées toutes seules depuis les
@@ -16,6 +18,7 @@
 
 mod hors_steam;
 mod liens;
+mod lol;
 mod parties;
 mod reglages;
 mod steam;
@@ -26,7 +29,7 @@ use tauri::{
     menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     webview::NewWindowResponse,
-    AppHandle, Emitter, Manager, Url, WebviewWindowBuilder, WindowEvent,
+    AppHandle, Emitter, Manager, Url, WebviewUrl, WebviewWindowBuilder, WindowEvent,
 };
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 use tauri_plugin_dialog::DialogExt;
@@ -95,6 +98,26 @@ fn parties_en_cours(carnet: tauri::State<'_, parties::Parties>) -> Vec<parties::
 #[tauri::command]
 fn presence_invisible(reglages: tauri::State<'_, reglages::Reglages>) -> bool {
     reglages.invisible()
+}
+
+/// Le compagnon LoL : la phase du client, la sélection des champions, la
+/// partie en cours. Le client vient peut-être d'ouvrir : on relit les
+/// programmes au besoin (au plus toutes les 5 secondes).
+#[tauri::command]
+async fn lol_etat(app: AppHandle) -> lol::EtatLol {
+    let suivi = app.state::<lol::Lol>();
+    if suivi.scan_du() {
+        let mut systeme = sysinfo::System::new();
+        let programmes = parties::programmes(&mut systeme);
+        suivi.noter(lol::acces_client(&programmes));
+    }
+    suivi.etat().await
+}
+
+/// Ouvre (ou ramène devant) la fenêtre du compagnon LoL.
+#[tauri::command]
+async fn ouvrir_compagnon(app: AppHandle) -> Result<(), String> {
+    creer_le_compagnon(&app).map_err(|e| e.to_string())
 }
 
 /// Les jeux hors Steam associés sur ce PC (sans leur chemin complet).
@@ -179,6 +202,21 @@ fn demarrer_la_surveillance(app: &AppHandle) {
             tour = tour.wrapping_add(1);
 
             let programmes = parties::programmes(&mut systeme);
+
+            // Le client LoL : le compagnon s'ouvre avec lui et se ferme avec lui.
+            let suivi = app.state::<lol::Lol>();
+            let avant = suivi.acces().is_some();
+            let acces = lol::acces_client(&programmes);
+            let maintenant = acces.is_some();
+            suivi.noter(acces);
+            if maintenant && !avant && app.state::<reglages::Reglages>().compagnon_auto() {
+                let _ = creer_le_compagnon(&app);
+            } else if !maintenant && avant {
+                if let Some(fenetre) = app.get_webview_window(COMPAGNON) {
+                    let _ = fenetre.close();
+                }
+            }
+
             let mut vus = parties::reconnaitre(&programmes, &dossiers);
             vus.extend(hors_steam::reconnaitre(
                 &app.state::<hors_steam::HorsSteam>().liens(),
@@ -261,6 +299,45 @@ fn verifier_maintenant(app: &AppHandle) {
     });
 }
 
+/// L'étiquette de la fenêtre du compagnon LoL.
+const COMPAGNON: &str = "compagnon";
+
+/// La fenêtre du compagnon LoL : étroite, à droite de l'écran, à côté du
+/// client. Elle affiche la page /compagnon/lol du site, qui lit le client
+/// par la commande `lol_etat`.
+fn creer_le_compagnon(app: &AppHandle) -> tauri::Result<()> {
+    if let Some(fenetre) = app.get_webview_window(COMPAGNON) {
+        let _ = fenetre.show();
+        let _ = fenetre.unminimize();
+        let _ = fenetre.set_focus();
+        return Ok(());
+    }
+    let url = Url::parse(&format!("https://{}/compagnon/lol", liens::SITE)).expect("adresse du compagnon");
+    let (largeur, hauteur) = (440.0, 860.0);
+    let mut fenetre = WebviewWindowBuilder::new(app, COMPAGNON, WebviewUrl::External(url))
+        .title("SQUAD Compagnon")
+        .inner_size(largeur, hauteur)
+        .min_inner_size(380.0, 480.0)
+        .on_navigation(|url| {
+            if reste_dans_la_fenetre(url) {
+                true
+            } else {
+                ouvrir_dans_le_navigateur(url);
+                false
+            }
+        })
+        .on_new_window(|url, _| {
+            ouvrir_dans_le_navigateur(&url);
+            NewWindowResponse::Deny
+        });
+    if let Ok(Some(ecran)) = app.primary_monitor() {
+        let taille = ecran.size().to_logical::<f64>(ecran.scale_factor());
+        fenetre = fenetre.position((taille.width - largeur - 16.0).max(0.0), 40.0);
+    }
+    fenetre.build()?;
+    Ok(())
+}
+
 /// La fenêtre, construite ici plutôt que par la configuration pour pouvoir
 /// décider où vont les liens. Cachée quand Windows lance l'app au démarrage.
 fn creer_la_fenetre(app: &AppHandle, visible: bool) -> tauri::Result<()> {
@@ -308,6 +385,7 @@ pub fn run() {
             let donnees = app.path().app_data_dir().ok();
             app.manage(reglages::Reglages::charger(donnees.as_ref().map(|d| d.join("reglages.json"))));
             app.manage(hors_steam::HorsSteam::charger(donnees.as_ref().map(|d| d.join("hors-steam.json"))));
+            app.manage(lol::Lol::nouveau());
             creer_la_fenetre(app.handle(), !lance_par_windows)?;
 
             let ouvrir = MenuItem::with_id(app, "ouvrir", "Ouvrir SQUAD", true, None::<&str>)?;
@@ -329,6 +407,15 @@ pub fn run() {
                 app.state::<reglages::Reglages>().invisible(),
                 None::<&str>,
             )?;
+            let compagnon = MenuItem::with_id(app, "compagnon", "Ouvrir le compagnon LoL", true, None::<&str>)?;
+            let compagnon_auto = CheckMenuItem::with_id(
+                app,
+                "compagnon_auto",
+                "Compagnon LoL avec le jeu",
+                true,
+                app.state::<reglages::Reglages>().compagnon_auto(),
+                None::<&str>,
+            )?;
             let separateur = PredefinedMenuItem::separator(app)?;
             // La version installée, grisée : utile pour savoir si la mise à
             // jour est passée quand un pote signale un souci.
@@ -343,11 +430,22 @@ pub fn run() {
             let quitter = MenuItem::with_id(app, "quitter", "Quitter", true, None::<&str>)?;
             let menu = Menu::with_items(
                 app,
-                &[&ouvrir, &demarrage, &invisible, &separateur, &version, &verifier, &quitter],
+                &[
+                    &ouvrir,
+                    &compagnon,
+                    &demarrage,
+                    &invisible,
+                    &compagnon_auto,
+                    &separateur,
+                    &version,
+                    &verifier,
+                    &quitter,
+                ],
             )?;
 
             let case_demarrage = demarrage.clone();
             let case_invisible = invisible.clone();
+            let case_compagnon = compagnon_auto.clone();
             TrayIconBuilder::with_id("squad")
                 .icon(app.default_window_icon().unwrap().clone())
                 .tooltip("SQUAD")
@@ -374,6 +472,13 @@ pub fn run() {
                         let _ = app.emit("invisible", etat);
                     }
                     "verifier" => verifier_maintenant(app),
+                    "compagnon" => {
+                        let _ = creer_le_compagnon(app);
+                    }
+                    "compagnon_auto" => {
+                        let etat = app.state::<reglages::Reglages>().basculer_compagnon_auto();
+                        let _ = case_compagnon.set_checked(etat);
+                    }
                     "quitter" => app.exit(0),
                     _ => {}
                 })
@@ -397,9 +502,13 @@ pub fn run() {
         // en vie pour voir les jeux lancés. On quitte vraiment depuis le
         // menu de l'icône.
         .on_window_event(|fenetre, event| {
+            // Seule la fenêtre principale se cache au lieu de fermer : le
+            // compagnon, lui, se ferme pour de bon.
             if let WindowEvent::CloseRequested { api, .. } = event {
-                let _ = fenetre.hide();
-                api.prevent_close();
+                if fenetre.label() == "main" {
+                    let _ = fenetre.hide();
+                    api.prevent_close();
+                }
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -412,7 +521,9 @@ pub fn run() {
             choisir_programme,
             associer_jeu_hors_steam,
             retirer_jeu_hors_steam,
-            lancer_jeu_hors_steam
+            lancer_jeu_hors_steam,
+            lol_etat,
+            ouvrir_compagnon
         ])
         .run(tauri::generate_context!())
         .expect("SQUAD n'a pas pu démarrer");

@@ -16,6 +16,8 @@ fn main() {
                 "associer_jeu_hors_steam",
                 "retirer_jeu_hors_steam",
                 "lancer_jeu_hors_steam",
+                "lol_etat",
+                "ouvrir_compagnon",
             ])),
     )
     .expect("échec de la préparation de la compilation");

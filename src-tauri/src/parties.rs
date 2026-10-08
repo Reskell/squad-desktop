@@ -226,6 +226,9 @@ pub struct Programme {
     pub nom: String,
     /// Ligne de commande, en minuscules, barres obliques comprises.
     pub commande: String,
+    /// La même, telle quelle : le client LoL y passe son port et son jeton
+    /// (voir lol.rs), où la casse compte. Ne quitte jamais l'app.
+    pub commande_brute: String,
 }
 
 /// Les programmes lancés en ce moment.
@@ -240,17 +243,19 @@ pub fn programmes(systeme: &mut System) -> Vec<Programme> {
     systeme
         .processes()
         .values()
-        .map(|p| Programme {
-            exe: p.exe().map(normaliser).unwrap_or_default(),
-            nom: p.name().to_string_lossy().to_lowercase(),
-            commande: p
+        .map(|p| {
+            let brute = p
                 .cmd()
                 .iter()
                 .map(|a| a.to_string_lossy())
                 .collect::<Vec<_>>()
-                .join(" ")
-                .replace('\\', "/")
-                .to_lowercase(),
+                .join(" ");
+            Programme {
+                exe: p.exe().map(normaliser).unwrap_or_default(),
+                nom: p.name().to_string_lossy().to_lowercase(),
+                commande: brute.replace('\\', "/").to_lowercase(),
+                commande_brute: brute,
+            }
         })
         .collect()
 }
