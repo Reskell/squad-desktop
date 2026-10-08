@@ -16,6 +16,15 @@ use serde_json::Value;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+/// Une page de runes à importer : des numéros, rien d'autre.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct PageDeRunes {
+    pub nom: String,
+    pub principal: u32,
+    pub secondaire: u32,
+    pub perks: Vec<u32>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccesClient {
     pub port: u16,
@@ -120,6 +129,62 @@ impl Lol {
             return None;
         }
         reponse.json::<Value>().await.ok()
+    }
+
+    /// Écrire dans le client LoL (POST, PUT, PATCH, DELETE), seulement sur
+    /// les quelques chemins que le compagnon utilise (voir plus bas).
+    async fn envoyer(&self, methode: reqwest::Method, chemin: &str, corps: Option<Value>) -> Result<Option<Value>, String> {
+        let http = self.http.as_ref().ok_or("Client HTTP indisponible")?;
+        let acces = self.acces().ok_or("Le client LoL n'est pas ouvert.")?;
+        let mut requete = http
+            .request(methode, format!("https://127.0.0.1:{}{chemin}", acces.port))
+            .basic_auth("riot", Some(&acces.jeton));
+        if let Some(corps) = corps {
+            requete = requete.json(&corps);
+        }
+        let reponse = requete.send().await.map_err(|_| "Le client LoL ne répond pas.".to_string())?;
+        if !reponse.status().is_success() {
+            return Err(format!("Le client LoL a refusé ({}).", reponse.status().as_u16()));
+        }
+        Ok(reponse.json::<Value>().await.ok())
+    }
+
+    /// Remplace la page de runes en cours par celle du compagnon. Seuls des
+    /// numéros de runes passent : la page est reconstruite ici.
+    pub async fn importer_runes(&self, page: &PageDeRunes) -> Result<(), String> {
+        if page.perks.len() != 9 {
+            return Err("Page de runes incomplète.".into());
+        }
+        // La page en cours, si on peut la modifier, laisse sa place (le
+        // client limite le nombre de pages).
+        if let Ok(Some(actuelle)) = self.envoyer(reqwest::Method::GET, "/lol-perks/v1/currentpage", None).await {
+            let modifiable = actuelle.get("isEditable").and_then(Value::as_bool).unwrap_or(false);
+            if let (true, Some(id)) = (modifiable, actuelle.get("id").and_then(Value::as_u64)) {
+                let _ = self
+                    .envoyer(reqwest::Method::DELETE, &format!("/lol-perks/v1/pages/{id}"), None)
+                    .await;
+            }
+        }
+        let corps = serde_json::json!({
+            "name": format!("SQUAD · {}", page.nom.chars().take(20).collect::<String>()),
+            "primaryStyleId": page.principal,
+            "subStyleId": page.secondaire,
+            "selectedPerkIds": page.perks,
+            "current": true
+        });
+        self.envoyer(reqwest::Method::POST, "/lol-perks/v1/pages", Some(corps)).await.map(|_| ())
+    }
+
+    /// Choisit les deux sorts d'invocateur pendant la sélection.
+    pub async fn importer_sorts(&self, premier: u32, second: u32) -> Result<(), String> {
+        let corps = serde_json::json!({ "spell1Id": premier, "spell2Id": second });
+        self.envoyer(
+            reqwest::Method::PATCH,
+            "/lol-champ-select/v1/session/my-selection",
+            Some(corps),
+        )
+        .await
+        .map(|_| ())
     }
 
     /// Un relevé complet pour le compagnon.

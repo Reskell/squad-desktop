@@ -18,6 +18,8 @@ fn main() {
                 "lancer_jeu_hors_steam",
                 "lol_etat",
                 "ouvrir_compagnon",
+                "lol_importer_runes",
+                "lol_importer_sorts",
             ])),
     )
     .expect("échec de la préparation de la compilation");

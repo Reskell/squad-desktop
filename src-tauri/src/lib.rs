@@ -114,6 +114,18 @@ async fn lol_etat(app: AppHandle) -> lol::EtatLol {
     suivi.etat().await
 }
 
+/// Importe une page de runes dans le client LoL (bouton du compagnon).
+#[tauri::command]
+async fn lol_importer_runes(app: AppHandle, page: lol::PageDeRunes) -> Result<(), String> {
+    app.state::<lol::Lol>().importer_runes(&page).await
+}
+
+/// Choisit les sorts d'invocateur pendant la sélection (bouton du compagnon).
+#[tauri::command]
+async fn lol_importer_sorts(app: AppHandle, premier: u32, second: u32) -> Result<(), String> {
+    app.state::<lol::Lol>().importer_sorts(premier, second).await
+}
+
 /// Ouvre (ou ramène devant) la fenêtre du compagnon LoL.
 #[tauri::command]
 async fn ouvrir_compagnon(app: AppHandle) -> Result<(), String> {
@@ -523,7 +535,9 @@ pub fn run() {
             retirer_jeu_hors_steam,
             lancer_jeu_hors_steam,
             lol_etat,
-            ouvrir_compagnon
+            ouvrir_compagnon,
+            lol_importer_runes,
+            lol_importer_sorts
         ])
         .run(tauri::generate_context!())
         .expect("SQUAD n'a pas pu démarrer");

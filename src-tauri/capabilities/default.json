@@ -24,6 +24,8 @@
     "allow-retirer-jeu-hors-steam",
     "allow-lancer-jeu-hors-steam",
     "allow-lol-etat",
-    "allow-ouvrir-compagnon"
+    "allow-ouvrir-compagnon",
+    "allow-lol-importer-runes",
+    "allow-lol-importer-sorts"
   ]
 }
