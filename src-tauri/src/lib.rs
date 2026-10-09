@@ -139,6 +139,17 @@ async fn lol_importer_sorts(app: AppHandle, premier: u32, second: u32) -> Result
     app.state::<lol::Lol>().importer_sorts(premier, second).await
 }
 
+/// Range un set d'objets « SQUAD · … » dans le client LoL (bouton du compagnon).
+#[tauri::command]
+async fn lol_importer_objets(
+    app: AppHandle,
+    titre: String,
+    champion: u32,
+    blocs: Vec<lol::BlocObjets>,
+) -> Result<(), String> {
+    app.state::<lol::Lol>().importer_objets(&titre, champion, &blocs).await
+}
+
 /// Ouvre (ou ramène devant) la fenêtre du compagnon LoL.
 #[tauri::command]
 async fn ouvrir_compagnon(app: AppHandle) -> Result<(), String> {
@@ -327,6 +338,50 @@ fn verifier_maintenant(app: &AppHandle) {
 
 /// L'étiquette de la fenêtre du compagnon LoL.
 const COMPAGNON: &str = "compagnon";
+const OVERLAY: &str = "overlay";
+
+/// L'overlay en jeu : une fenêtre transparente, toujours devant, que la
+/// souris traverse, posée sur tout l'écran principal. Elle affiche la page
+/// /compagnon/lol/overlay du site (ce que le tableau des scores montre déjà,
+/// les objectifs publics, ton matchup). Le jeu doit être en « plein écran
+/// fenêtré » (le plein écran exclusif passe devant toute fenêtre).
+fn ouvrir_l_overlay(app: &AppHandle) -> tauri::Result<()> {
+    if app.get_webview_window(OVERLAY).is_some() {
+        return Ok(());
+    }
+    let url = Url::parse(&format!("https://{}/compagnon/lol/overlay", liens::SITE)).expect("adresse de l'overlay");
+    let mut fenetre = WebviewWindowBuilder::new(app, OVERLAY, WebviewUrl::External(url))
+        .title("SQUAD Overlay")
+        .transparent(true)
+        .decorations(false)
+        .shadow(false)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .resizable(false)
+        .focused(false)
+        .on_navigation(reste_dans_la_fenetre);
+    if let Ok(Some(ecran)) = app.primary_monitor() {
+        let taille = ecran.size().to_logical::<f64>(ecran.scale_factor());
+        fenetre = fenetre.inner_size(taille.width, taille.height).position(0.0, 0.0);
+    }
+    let fenetre = fenetre.build()?;
+    // Les clics passent au jeu : l'overlay ne se touche pas.
+    let _ = fenetre.set_ignore_cursor_events(true);
+    Ok(())
+}
+
+/// Montre ou retire l'overlay en jeu (demandé par la page du compagnon).
+#[tauri::command]
+async fn lol_overlay(app: AppHandle, afficher: bool) -> Result<(), String> {
+    if afficher {
+        ouvrir_l_overlay(&app).map_err(|e| e.to_string())
+    } else {
+        if let Some(fenetre) = app.get_webview_window(OVERLAY) {
+            let _ = fenetre.close();
+        }
+        Ok(())
+    }
+}
 
 /// La fenêtre du compagnon LoL : étroite, à droite de l'écran, à côté du
 /// client. Elle affiche la page /compagnon/lol du site, qui lit le client
@@ -577,7 +632,9 @@ pub fn run() {
             lol_etat,
             ouvrir_compagnon,
             lol_importer_runes,
-            lol_importer_sorts
+            lol_importer_sorts,
+            lol_importer_objets,
+            lol_overlay
         ])
         .run(tauri::generate_context!())
         .expect("l'app n'a pas pu démarrer");

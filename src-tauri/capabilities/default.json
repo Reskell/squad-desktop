@@ -4,7 +4,8 @@
   "description": "Droits de la fenêtre principale : seul le site SQUAD//LOG peut lire les jeux installés et les parties, et lancer les jeux hors Steam associés",
   "windows": [
     "main",
-    "compagnon"
+    "compagnon",
+    "overlay"
   ],
   "remote": {
     "urls": [
@@ -26,6 +27,8 @@
     "allow-lol-etat",
     "allow-ouvrir-compagnon",
     "allow-lol-importer-runes",
-    "allow-lol-importer-sorts"
+    "allow-lol-importer-sorts",
+    "allow-lol-importer-objets",
+    "allow-lol-overlay"
   ]
 }

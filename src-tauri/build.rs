@@ -20,6 +20,8 @@ fn main() {
                 "ouvrir_compagnon",
                 "lol_importer_runes",
                 "lol_importer_sorts",
+                "lol_importer_objets",
+                "lol_overlay",
             ])),
     )
     .expect("échec de la préparation de la compilation");

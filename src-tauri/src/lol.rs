@@ -33,6 +33,13 @@ pub struct PageDeRunes {
 /// Le début du nom des pages créées par le compagnon.
 const PREFIXE_PAGE: &str = "SQUAD · ";
 
+/// Un bloc d'un set d'objets à importer (« Les objets du monde »…).
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct BlocObjets {
+    pub nom: String,
+    pub objets: Vec<u32>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccesClient {
     pub port: u16,
@@ -51,6 +58,42 @@ pub struct EtatLol {
     pub selection: Option<Value>,
     /// La partie en cours (Live Client Data API), telle quelle.
     pub partie: Option<Value>,
+    /// Les deux équipes du chargement et de la partie (gameflow) : pour
+    /// chaque joueur son compte (puuid), son champion et son poste. Les
+    /// noms sont visibles de tous à partir de l'écran de chargement.
+    pub rencontre: Option<Value>,
+}
+
+/// Les deux équipes d'une session gameflow, réduites à l'utile.
+pub fn rencontre_de(session: &Value) -> Option<Value> {
+    let partie = session.get("gameData")?;
+    let equipe = |cle: &str| -> Vec<Value> {
+        partie
+            .get(cle)
+            .and_then(Value::as_array)
+            .map(|joueurs| {
+                joueurs
+                    .iter()
+                    .map(|j| {
+                        serde_json::json!({
+                            "puuid": j.get("puuid").and_then(Value::as_str).unwrap_or_default(),
+                            "championId": j.get("championId").and_then(Value::as_u64).unwrap_or(0),
+                            "poste": j.get("selectedPosition").and_then(Value::as_str).unwrap_or_default(),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let (un, deux) = (equipe("teamOne"), equipe("teamTwo"));
+    if un.is_empty() && deux.is_empty() {
+        return None;
+    }
+    Some(serde_json::json!({
+        "file": partie.get("queue").and_then(|q| q.get("id")).and_then(Value::as_i64),
+        "equipeUn": un,
+        "equipeDeux": deux,
+    }))
 }
 
 /// La valeur d'une option `--cle=valeur` dans une ligne de commande.
@@ -218,6 +261,46 @@ impl Lol {
         .map(|_| ())
     }
 
+    /// Range un set d'objets « SQUAD · … » dans le client (le set d'avant du
+    /// compagnon est remplacé ; ceux de la personne ne bougent pas).
+    pub async fn importer_objets(&self, titre: &str, champion: u32, blocs: &[BlocObjets]) -> Result<(), String> {
+        let moi = self
+            .envoyer(reqwest::Method::GET, "/lol-summoner/v1/current-summoner", None)
+            .await?
+            .ok_or("Invocateur inconnu.")?;
+        let id = moi
+            .get("summonerId")
+            .and_then(Value::as_u64)
+            .ok_or("Invocateur inconnu.")?;
+        let chemin = format!("/lol-item-sets/v1/item-sets/{id}/sets");
+        let mut tout = match self.envoyer(reqwest::Method::GET, &chemin, None).await? {
+            Some(v @ Value::Object(_)) => v,
+            _ => serde_json::json!({}),
+        };
+        let mut sets: Vec<Value> = tout
+            .get("itemSets")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|s| {
+                !s.get("title")
+                    .and_then(Value::as_str)
+                    .is_some_and(|t| t.starts_with(PREFIXE_PAGE))
+            })
+            .collect();
+        sets.push(set_d_objets(titre, champion, blocs));
+        tout["itemSets"] = Value::Array(sets);
+        if tout.get("accountId").is_none() {
+            tout["accountId"] = serde_json::json!(id);
+        }
+        tout["timestamp"] = serde_json::json!(std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0));
+        self.envoyer(reqwest::Method::PUT, &chemin, Some(tout)).await.map(|_| ())
+    }
+
     /// Un relevé complet pour le compagnon.
     pub async fn etat(&self) -> EtatLol {
         let Some(acces) = self.acces() else {
@@ -244,10 +327,18 @@ impl Lol {
                     .lire(format!("{base}/lol-champ-select/v1/session"), Some(&acces))
                     .await;
             }
-            Some("InProgress") => {
-                etat.partie = self
-                    .lire("https://127.0.0.1:2999/liveclientdata/allgamedata".to_string(), None)
-                    .await;
+            Some("GameStart") | Some("InProgress") | Some("Reconnect") => {
+                if let Some(session) = self
+                    .lire(format!("{base}/lol-gameflow/v1/session"), Some(&acces))
+                    .await
+                {
+                    etat.rencontre = rencontre_de(&session);
+                }
+                if phase.as_deref() != Some("GameStart") {
+                    etat.partie = self
+                        .lire("https://127.0.0.1:2999/liveclientdata/allgamedata".to_string(), None)
+                        .await;
+                }
             }
             _ => {}
         }
@@ -255,9 +346,72 @@ impl Lol {
     }
 }
 
+/// Un set d'objets au format du client LoL (blocs d'objets, un exemplaire chacun).
+pub fn set_d_objets(titre: &str, champion: u32, blocs: &[BlocObjets]) -> Value {
+    let blocs: Vec<Value> = blocs
+        .iter()
+        .filter(|b| !b.objets.is_empty())
+        .map(|b| {
+            serde_json::json!({
+                "type": b.nom.chars().take(40).collect::<String>(),
+                "hideIfSummonerSpell": "",
+                "showIfSummonerSpell": "",
+                "items": b.objets.iter().take(12).map(|o| serde_json::json!({ "id": o.to_string(), "count": 1 })).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "title": format!("{PREFIXE_PAGE}{}", titre.chars().take(30).collect::<String>()),
+        "associatedChampions": [champion],
+        "associatedMaps": [11],
+        "blocks": blocs,
+        "map": "SR",
+        "mode": "CLASSIC",
+        "preferredItemSlots": [],
+        "sortrank": 0,
+        "startedFrom": "blank",
+        "type": "custom",
+        "uid": format!("squad-compagnon-{champion}"),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rencontre_garde_l_utile() {
+        let session = serde_json::json!({
+            "gameData": {
+                "queue": { "id": 420 },
+                "teamOne": [{ "puuid": "a", "championId": 103, "selectedPosition": "MIDDLE", "summonerName": "x" }],
+                "teamTwo": [{ "puuid": "b", "championId": 238 }]
+            }
+        });
+        let r = rencontre_de(&session).unwrap();
+        assert_eq!(r["file"], 420);
+        assert_eq!(r["equipeUn"][0]["puuid"], "a");
+        assert_eq!(r["equipeUn"][0]["poste"], "MIDDLE");
+        assert_eq!(r["equipeDeux"][0]["championId"], 238);
+        assert!(r["equipeUn"][0].get("summonerName").is_none());
+        assert!(rencontre_de(&serde_json::json!({})).is_none());
+    }
+
+    #[test]
+    fn set_d_objets_au_format_du_client() {
+        let set = set_d_objets(
+            "Ahri",
+            103,
+            &[
+                BlocObjets { nom: "Le monde".into(), objets: vec![3089, 3157] },
+                BlocObjets { nom: "Vide".into(), objets: vec![] },
+            ],
+        );
+        assert_eq!(set["title"], "SQUAD · Ahri");
+        assert_eq!(set["associatedChampions"][0], 103);
+        assert_eq!(set["blocks"].as_array().unwrap().len(), 1);
+        assert_eq!(set["blocks"][0]["items"][1]["id"], "3157");
+    }
 
     #[test]
     fn lit_le_port_et_le_jeton() {
