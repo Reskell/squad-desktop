@@ -339,11 +339,21 @@ fn creer_le_compagnon(app: &AppHandle) -> tauri::Result<()> {
         return Ok(());
     }
     let url = Url::parse(&format!("https://{}/compagnon/lol", liens::SITE)).expect("adresse du compagnon");
-    let (largeur, hauteur) = (440.0, 860.0);
+    // Une vraie appli (menu à gauche, pages) : grande par défaut, sans
+    // dépasser l'écran. Rétrécie, elle passe en colonne d'icônes.
+    let ecran = app
+        .primary_monitor()
+        .ok()
+        .flatten()
+        .map(|e| e.size().to_logical::<f64>(e.scale_factor()));
+    let (largeur, hauteur) = match ecran {
+        Some(t) => ((t.width - 32.0).clamp(420.0, 1240.0), (t.height - 80.0).clamp(480.0, 820.0)),
+        None => (1240.0, 820.0),
+    };
     let mut fenetre = WebviewWindowBuilder::new(app, COMPAGNON, WebviewUrl::External(url))
         .title("SQUAD Compagnon")
         .inner_size(largeur, hauteur)
-        .min_inner_size(380.0, 480.0)
+        .min_inner_size(400.0, 480.0)
         .on_navigation(|url| {
             if reste_dans_la_fenetre(url) {
                 true
@@ -356,9 +366,8 @@ fn creer_le_compagnon(app: &AppHandle) -> tauri::Result<()> {
             ouvrir_dans_le_navigateur(&url);
             NewWindowResponse::Deny
         });
-    if let Ok(Some(ecran)) = app.primary_monitor() {
-        let taille = ecran.size().to_logical::<f64>(ecran.scale_factor());
-        fenetre = fenetre.position((taille.width - largeur - 16.0).max(0.0), 40.0);
+    if let Some(t) = ecran {
+        fenetre = fenetre.position((t.width - largeur - 16.0).max(0.0), 40.0);
     }
     fenetre.build()?;
     Ok(())
