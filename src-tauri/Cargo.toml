@@ -22,6 +22,9 @@ tauri-plugin-updater = "2"
 tauri-plugin-dialog = "2"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls-no-provider"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+# Le Garage (mods.rs) : vérifier l'empreinte d'un paquet et le décompresser.
+sha2 = "0.10"
+zip = { version = "4", default-features = false, features = ["deflate"] }
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.56"

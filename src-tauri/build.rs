@@ -22,6 +22,10 @@ fn main() {
                 "lol_importer_sorts",
                 "lol_importer_objets",
                 "lol_overlay",
+                "serveur_allumer",
+                "mod_installer",
+                "mod_desinstaller",
+                "mods_installes",
             ])),
     )
     .expect("échec de la préparation de la compilation");

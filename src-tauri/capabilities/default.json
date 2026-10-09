@@ -29,6 +29,10 @@
     "allow-lol-importer-runes",
     "allow-lol-importer-sorts",
     "allow-lol-importer-objets",
-    "allow-lol-overlay"
+    "allow-lol-overlay",
+    "allow-serveur-allumer",
+    "allow-mod-installer",
+    "allow-mod-desinstaller",
+    "allow-mods-installes"
   ]
 }

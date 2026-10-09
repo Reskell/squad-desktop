@@ -11,6 +11,10 @@
 //! - le mode invisible (reglages.rs) : la bande ne voit plus à quoi on joue ;
 //! - le compagnon LoL (lol.rs) : une seconde fenêtre, ouverte avec le client
 //!   LoL, qui lit la sélection des champions et la partie en cours ;
+//! - SQUAD//JOIN : « Allumer » le serveur de la bande hébergé ici
+//!   (serveurs.rs, docker start) ;
+//! - le Garage en un clic : installer et retirer les mods de la bande dans
+//!   le dossier d'un jeu (mods.rs) ;
 //! - une icône dans la barre des tâches, le lancement avec Windows, et les
 //!   liens externes renvoyés vers le navigateur (liens.rs) ;
 //! - les mises à jour, téléchargées et installées toutes seules depuis les
@@ -23,11 +27,13 @@
 mod hors_steam;
 mod liens;
 mod lol;
+mod mods;
 mod parties;
 mod reglages;
+mod serveurs;
 mod steam;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tauri::{
     menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem},
@@ -215,6 +221,55 @@ fn lancer_jeu_hors_steam(
         .spawn()
         .map(|_| ())
         .map_err(|e| format!("Impossible de lancer {} : {e}", hors_steam::nom_du_programme(chemin)))
+}
+
+/// « Allumer » un serveur de la bande hébergé sur ce PC (docker start).
+#[tauri::command]
+async fn serveur_allumer(conteneur: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || serveurs::allumer(&conteneur))
+        .await
+        .map_err(|_| "L'allumage a planté.".to_string())?
+}
+
+/// Le dossier d'un jeu sur ce PC : Steam (par son appid), sinon le dossier
+/// du programme associé dans PLAY.
+fn dossier_du_jeu(app: &AppHandle, appid: Option<u32>, game_id: &str) -> Option<PathBuf> {
+    if let Some(appid) = appid {
+        if let Some((_, dossier)) = steam::jeux_et_dossiers().into_iter().find(|(jeu, _)| jeu.appid == appid) {
+            return Some(dossier);
+        }
+    }
+    app.state::<hors_steam::HorsSteam>()
+        .trouver(game_id)
+        .and_then(|lien| Path::new(&lien.chemin).parent().map(Path::to_path_buf))
+}
+
+/// Installe un paquet du Garage : téléchargé, vérifié, décompressé dans le
+/// dossier du jeu (voir mods.rs).
+#[tauri::command]
+async fn mod_installer(app: AppHandle, paquet: mods::Paquet) -> Result<mods::Visible, String> {
+    let dossier = dossier_du_jeu(&app, paquet.appid, &paquet.game_id).ok_or_else(|| {
+        "Jeu introuvable sur ce PC : installe-le (ou associe son programme dans PLAY), puis réessaie.".to_string()
+    })?;
+    let octets = mods::telecharger(&paquet.url, paquet.taille).await?;
+    let app2 = app.clone();
+    tauri::async_runtime::spawn_blocking(move || app2.state::<mods::Mods>().installer(&paquet, &octets, &dossier))
+        .await
+        .map_err(|_| "L'installation a planté.".to_string())?
+}
+
+/// Retire un paquet et remet les fichiers qu'il avait remplacés.
+#[tauri::command]
+async fn mod_desinstaller(app: AppHandle, id: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || app.state::<mods::Mods>().desinstaller(&id))
+        .await
+        .map_err(|_| "La désinstallation a planté.".to_string())?
+}
+
+/// Les paquets installés sur ce PC.
+#[tauri::command]
+fn mods_installes(mods: tauri::State<'_, mods::Mods>) -> Vec<mods::Visible> {
+    mods.visibles()
 }
 
 /// La boucle qui regarde quels jeux tournent, dans son propre fil pour ne
@@ -476,6 +531,7 @@ pub fn run() {
             app.manage(reglages::Reglages::charger(donnees.as_ref().map(|d| d.join("reglages.json"))));
             app.manage(hors_steam::HorsSteam::charger(donnees.as_ref().map(|d| d.join("hors-steam.json"))));
             app.manage(lol::Lol::nouveau());
+            app.manage(mods::Mods::charger(donnees.clone()));
             if SEUL {
                 // Au démarrage de Windows, il attend LoL sans rien ouvrir.
                 if !lance_par_windows {
@@ -634,7 +690,11 @@ pub fn run() {
             lol_importer_runes,
             lol_importer_sorts,
             lol_importer_objets,
-            lol_overlay
+            lol_overlay,
+            serveur_allumer,
+            mod_installer,
+            mod_desinstaller,
+            mods_installes
         ])
         .run(tauri::generate_context!())
         .expect("l'app n'a pas pu démarrer");
