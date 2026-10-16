@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "SQUAD",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "identifier": "fr.squad.desktop",
   "build": {
     "frontendDist": "../dist"
@@ -11,7 +11,7 @@
       {
         "label": "main",
         "title": "SQUAD",
-        "url": "https://squadlog-three.vercel.app/play",
+        "url": "https://squadlog-three.vercel.app/?app=1",
         "width": 1280,
         "height": 820,
         "minWidth": 900,

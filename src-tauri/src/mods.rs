@@ -138,11 +138,19 @@ pub async fn telecharger(url: &str, taille_annoncee: u64) -> Result<Vec<u8>, Str
     if !reponse.status().is_success() {
         return Err("Le lien du paquet a expiré : réessaie.".into());
     }
-    let octets = reponse.bytes().await.map_err(|_| "Téléchargement interrompu.".to_string())?;
-    if octets.len() as u64 > TAILLE_MAX {
+    // Refuser avant de tout charger en mémoire, puis lire en flux avec un plafond.
+    if reponse.content_length().is_some_and(|n| n > TAILLE_MAX) {
         return Err("Paquet trop gros.".into());
     }
-    Ok(octets.to_vec())
+    let mut reponse = reponse;
+    let mut octets = Vec::new();
+    while let Some(morceau) = reponse.chunk().await.map_err(|_| "Téléchargement interrompu.".to_string())? {
+        if octets.len() as u64 + morceau.len() as u64 > TAILLE_MAX {
+            return Err("Paquet trop gros.".into());
+        }
+        octets.extend_from_slice(&morceau);
+    }
+    Ok(octets)
 }
 
 impl Mods {
@@ -178,6 +186,11 @@ impl Mods {
     fn dossier_des_copies(&self, id: &str) -> Result<PathBuf, String> {
         let racine = self.copies.clone().ok_or("Dossier de l'app introuvable.")?;
         let id_sur = chemin_sur(id).ok_or("Paquet refusé.")?;
+        // Un id vide (ou « . ») viserait le dossier mods/ lui-même : une
+        // désinstallation effacerait alors les sauvegardes de tous les mods.
+        if id_sur.as_os_str().is_empty() {
+            return Err("Paquet refusé.".into());
+        }
         Ok(racine.join(id_sur))
     }
 
@@ -323,6 +336,17 @@ mod tests {
             cible: cible.into(),
             appid: None,
         }
+    }
+
+    #[test]
+    fn id_vide_refuse() {
+        let dossier = std::env::temp_dir().join(format!("squad-mods-vide-{}", std::process::id()));
+        let mods = Mods::charger(Some(dossier.clone()));
+        assert!(mods.dossier_des_copies("").is_err());
+        assert!(mods.dossier_des_copies(".").is_err());
+        assert!(mods.dossier_des_copies("a/../..").is_err());
+        assert!(mods.dossier_des_copies("abc").is_ok());
+        let _ = std::fs::remove_dir_all(dossier);
     }
 
     #[test]
