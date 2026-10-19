@@ -1,6 +1,6 @@
 [package]
 name = "squad-desktop"
-version = "0.1.10"
+version = "0.1.11"
 description = "L'app de bureau de SQUAD : le site SQUAD//LOG, plus ce qui demande le PC"
 edition = "2021"
 
@@ -25,6 +25,7 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 # Le Garage (mods.rs) : vérifier l'empreinte d'un paquet et le décompresser.
 sha2 = "0.10"
 zip = { version = "4", default-features = false, features = ["deflate"] }
+tauri-plugin-global-shortcut = "2"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.56"

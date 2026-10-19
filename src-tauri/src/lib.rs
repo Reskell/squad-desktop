@@ -43,6 +43,7 @@ use tauri::{
 };
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 use tauri_plugin_dialog::DialogExt;
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 use tauri_plugin_updater::UpdaterExt;
 
 /// Un relevé des programmes lancés toutes les 30 secondes : assez fin pour
@@ -425,6 +426,65 @@ fn ouvrir_l_overlay(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
+/// L'overlay Street Fighter 6 : les BnB du perso choisi (dans PLAY), dans
+/// une colonne transparente à droite de l'écran, toujours devant, que la
+/// souris traverse. Il s'ouvre et se ferme avec Ctrl+Maj+F6, en jeu comme
+/// ailleurs (le jeu doit être en « plein écran fenêtré »).
+const OVERLAY_SF6: &str = "overlay_sf6";
+const RACCOURCI_SF6: &str = "ctrl+shift+F6";
+
+fn ouvrir_l_overlay_sf6(app: &AppHandle) -> tauri::Result<()> {
+    if app.get_webview_window(OVERLAY_SF6).is_some() {
+        return Ok(());
+    }
+    let url = Url::parse(&format!("https://{}/compagnon/sf6/overlay", liens::SITE)).expect("adresse de l'overlay SF6");
+    let mut fenetre = WebviewWindowBuilder::new(app, OVERLAY_SF6, WebviewUrl::External(url))
+        .title("SQUAD Overlay SF6")
+        .transparent(true)
+        .decorations(false)
+        .shadow(false)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .resizable(false)
+        .focused(false)
+        .on_navigation(reste_dans_la_fenetre);
+    if let Ok(Some(ecran)) = app.primary_monitor() {
+        let taille = ecran.size().to_logical::<f64>(ecran.scale_factor());
+        let largeur = 440.0_f64.min(taille.width);
+        let hauteur = (taille.height * 0.8).max(320.0).min(taille.height);
+        fenetre = fenetre
+            .inner_size(largeur, hauteur)
+            .position((taille.width - largeur - 16.0).max(0.0), (taille.height - hauteur) / 2.0);
+    }
+    let fenetre = fenetre.build()?;
+    let _ = fenetre.set_ignore_cursor_events(true);
+    Ok(())
+}
+
+/// Ouvre l'overlay SF6 s'il est fermé, le ferme s'il est ouvert.
+fn basculer_l_overlay_sf6(app: &AppHandle) {
+    if let Some(fenetre) = app.get_webview_window(OVERLAY_SF6) {
+        let _ = fenetre.close();
+    } else {
+        let _ = ouvrir_l_overlay_sf6(app);
+    }
+}
+
+/// L'overlay SF6 demandé par PLAY : `afficher` absent, il bascule.
+#[tauri::command]
+async fn sf6_overlay(app: AppHandle, afficher: Option<bool>) -> Result<bool, String> {
+    match afficher {
+        Some(true) => ouvrir_l_overlay_sf6(&app).map_err(|e| e.to_string())?,
+        Some(false) => {
+            if let Some(fenetre) = app.get_webview_window(OVERLAY_SF6) {
+                let _ = fenetre.close();
+            }
+        }
+        None => basculer_l_overlay_sf6(&app),
+    }
+    Ok(app.get_webview_window(OVERLAY_SF6).is_some())
+}
+
 /// Montre ou retire l'overlay en jeu (demandé par la page du compagnon).
 #[tauri::command]
 async fn lol_overlay(app: AppHandle, afficher: bool) -> Result<(), String> {
@@ -521,6 +581,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_autostart::init(
             MacosLauncher::LaunchAgent,
             Some(vec![ARG_DEMARRAGE]),
@@ -658,6 +719,14 @@ pub fn run() {
 
             demarrer_la_surveillance(app.handle());
             demarrer_les_mises_a_jour(app.handle());
+            // Ctrl+Maj+F6 : l'overlay Street Fighter 6, partout. Si un autre
+            // programme a déjà pris ce raccourci, l'app démarre quand même
+            // (le bouton de PLAY reste là).
+            let _ = app.global_shortcut().on_shortcut(RACCOURCI_SF6, |app, _raccourci, evenement| {
+                if evenement.state == ShortcutState::Pressed {
+                    basculer_l_overlay_sf6(app);
+                }
+            });
             Ok(())
         })
         // Fermer la fenêtre la cache au lieu de quitter : l'app doit rester
@@ -691,6 +760,7 @@ pub fn run() {
             lol_importer_sorts,
             lol_importer_objets,
             lol_overlay,
+            sf6_overlay,
             serveur_allumer,
             mod_installer,
             mod_desinstaller,
