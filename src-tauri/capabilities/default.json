@@ -5,7 +5,8 @@
   "windows": [
     "main",
     "compagnon",
-    "overlay"
+    "overlay",
+    "toast"
   ],
   "remote": {
     "urls": [
@@ -31,6 +32,9 @@
     "allow-lol-importer-objets",
     "allow-lol-overlay",
     "allow-sf6-overlay",
+    "allow-notifier-lancement",
+    "allow-toast-rejoindre",
+    "allow-toast-fermer",
     "allow-serveur-allumer",
     "allow-mod-installer",
     "allow-mod-desinstaller",

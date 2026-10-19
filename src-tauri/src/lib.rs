@@ -470,6 +470,104 @@ fn basculer_l_overlay_sf6(app: &AppHandle) {
     }
 }
 
+/// La notification « On lance » : une petite fenêtre en bas à droite de
+/// l'écran (« Jerem lance Lethal Company — Rejoindre »), quand un pote lance
+/// un jeu depuis PLAY et que SQUAD n'est pas au premier plan. Une fenêtre à
+/// nous plutôt qu'un toast Windows : son bouton Rejoindre ramène l'app sur
+/// le bon jeu, ce qu'un toast d'une app non empaquetée ne sait pas faire.
+const TOAST: &str = "toast";
+static TOAST_NUMERO: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Un identifiant de la base (uuid), et rien d'autre.
+fn est_un_uuid(id: &str) -> bool {
+    id.len() == 36
+        && id
+            .char_indices()
+            .all(|(i, c)| if [8, 13, 18, 23].contains(&i) { c == '-' } else { c.is_ascii_hexdigit() })
+}
+
+fn fermer_le_toast(app: &AppHandle) {
+    if let Some(fenetre) = app.get_webview_window(TOAST) {
+        let _ = fenetre.close();
+    }
+}
+
+/// Montre la notification d'un lancement. Rend faux quand SQUAD est déjà
+/// au premier plan (le bandeau du site suffit alors).
+#[tauri::command]
+async fn notifier_lancement(
+    app: AppHandle,
+    id: String,
+    qui: String,
+    jeu: String,
+    game_id: String,
+) -> Result<bool, String> {
+    if !est_un_uuid(&id) || !est_un_uuid(&game_id) {
+        return Err("Lancement inconnu.".into());
+    }
+    if let Some(principale) = app.get_webview_window("main") {
+        let devant = principale.is_visible().unwrap_or(false)
+            && !principale.is_minimized().unwrap_or(false)
+            && principale.is_focused().unwrap_or(false);
+        if devant {
+            return Ok(false);
+        }
+    }
+    fermer_le_toast(&app);
+    let mut url = Url::parse(&format!("https://{}/notification", liens::SITE)).expect("adresse de la notification");
+    url.query_pairs_mut()
+        .append_pair("id", &id)
+        .append_pair("qui", &qui.chars().take(40).collect::<String>())
+        .append_pair("jeu", &jeu.chars().take(80).collect::<String>())
+        .append_pair("game", &game_id);
+    let mut fenetre = WebviewWindowBuilder::new(&app, TOAST, WebviewUrl::External(url))
+        .title("SQUAD")
+        .decorations(false)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .resizable(false)
+        .focused(false)
+        .inner_size(380.0, 112.0)
+        .on_navigation(reste_dans_la_fenetre);
+    if let Ok(Some(ecran)) = app.primary_monitor() {
+        let taille = ecran.size().to_logical::<f64>(ecran.scale_factor());
+        // Au-dessus de la barre des tâches, dans le coin.
+        fenetre = fenetre.position((taille.width - 396.0).max(0.0), (taille.height - 172.0).max(0.0));
+    }
+    fenetre.build().map_err(|e| e.to_string())?;
+    // Elle s'en va seule au bout de vingt secondes (sauf si une autre l'a remplacée).
+    let numero = TOAST_NUMERO.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+    let app2 = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_secs(20));
+        if TOAST_NUMERO.load(std::sync::atomic::Ordering::SeqCst) == numero {
+            fermer_le_toast(&app2);
+        }
+    });
+    Ok(true)
+}
+
+/// « Rejoindre » sur la notification : SQUAD revient devant, sur le jeu dans PLAY.
+#[tauri::command]
+async fn toast_rejoindre(app: AppHandle, game_id: String) -> Result<(), String> {
+    if !est_un_uuid(&game_id) {
+        return Err("Jeu inconnu.".into());
+    }
+    fermer_le_toast(&app);
+    let url = Url::parse(&format!("https://{}/play?jeu={game_id}", liens::SITE)).map_err(|e| e.to_string())?;
+    if let Some(principale) = app.get_webview_window("main") {
+        let _ = principale.navigate(url);
+    }
+    montrer(&app);
+    Ok(())
+}
+
+/// « Fermer » sur la notification.
+#[tauri::command]
+async fn toast_fermer(app: AppHandle) {
+    fermer_le_toast(&app);
+}
+
 /// L'overlay SF6 demandé par PLAY : `afficher` absent, il bascule.
 #[tauri::command]
 async fn sf6_overlay(app: AppHandle, afficher: Option<bool>) -> Result<bool, String> {
@@ -761,6 +859,9 @@ pub fn run() {
             lol_importer_objets,
             lol_overlay,
             sf6_overlay,
+            notifier_lancement,
+            toast_rejoindre,
+            toast_fermer,
             serveur_allumer,
             mod_installer,
             mod_desinstaller,
@@ -768,4 +869,17 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("l'app n'a pas pu démarrer");
+}
+
+#[cfg(test)]
+mod tests_notification {
+    use super::est_un_uuid;
+
+    #[test]
+    fn uuid_seulement() {
+        assert!(est_un_uuid("123e4567-e89b-12d3-a456-426614174000"));
+        assert!(!est_un_uuid("123e4567-e89b-12d3-a456-42661417400"));
+        assert!(!est_un_uuid("../../play?jeu=x&autre=yyyyyyyyyyyyyyy"));
+        assert!(!est_un_uuid("123e4567ae89b-12d3-a456-426614174000"));
+    }
 }
