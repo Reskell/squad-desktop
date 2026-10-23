@@ -56,9 +56,12 @@ const RELIRE_LES_JEUX_TOUS_LES: u32 = 20;
 /// alors cachée dans la barre des tâches, sans ouvrir de fenêtre.
 const ARG_DEMARRAGE: &str = "--au-demarrage";
 /// Première recherche de mise à jour peu après le démarrage, puis toutes
-/// les six heures : l'app reste souvent ouverte des jours entiers.
-const PREMIERE_RECHERCHE: Duration = Duration::from_secs(60);
-const ENTRE_DEUX_RECHERCHES: Duration = Duration::from_secs(6 * 60 * 60);
+/// les heures : l'app reste souvent ouverte des jours entiers, une version
+/// publiée le soir arrive ainsi dans l'heure.
+const PREMIERE_RECHERCHE: Duration = Duration::from_secs(10);
+const ENTRE_DEUX_RECHERCHES: Duration = Duration::from_secs(60 * 60);
+/// Le serveur des mises à jour injoignable (réseau pas encore prêt) : nouvel essai.
+const NOUVEL_ESSAI: Duration = Duration::from_secs(2 * 60);
 /// Vrai pour « SQUAD Compagnon », le compagnon LoL téléchargé seul : la
 /// publication le compile avec la variable SQUAD_COMPAGNON_SEUL.
 const SEUL: bool = option_env!("SQUAD_COMPAGNON_SEUL").is_some();
@@ -347,15 +350,22 @@ fn demarrer_les_mises_a_jour(app: &AppHandle) {
         std::thread::sleep(PREMIERE_RECHERCHE);
         loop {
             let un_jeu_tourne = !app.state::<parties::Parties>().en_cours().is_empty();
+            let mut joint = true;
             if !un_jeu_tourne {
                 tauri::async_runtime::block_on(async {
                     let Ok(updater) = app.updater() else { return };
-                    if let Ok(Some(mise_a_jour)) = updater.check().await {
-                        let _ = mise_a_jour.download_and_install(|_, _| {}, || {}).await;
+                    match updater.check().await {
+                        Ok(Some(mise_a_jour)) => {
+                            let _ = mise_a_jour.download_and_install(|_, _| {}, || {}).await;
+                        }
+                        Ok(None) => {}
+                        // Au démarrage de Windows, le réseau n'est pas
+                        // toujours prêt : on réessaie bientôt, pas dans une heure.
+                        Err(_) => joint = false,
                     }
                 });
             }
-            std::thread::sleep(ENTRE_DEUX_RECHERCHES);
+            std::thread::sleep(if joint { ENTRE_DEUX_RECHERCHES } else { NOUVEL_ESSAI });
         }
     });
 }
