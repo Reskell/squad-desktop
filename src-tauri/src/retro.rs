@@ -1,72 +1,164 @@
-//! SQUAD//RETRO dans l'app (vague 1) : les jeux rétro de la personne, lancés
-//! en un clic avec RetroArch caché.
+//! SQUAD//RETRO dans l'app : les jeux rétro de la personne, lancés en un clic.
 //!
-//! Le moteur (dépôt Squad-retro) fait le travail : scanner le dossier des
-//! jeux, reconnaître chaque fichier, préparer la commande. Ici, l'app garde
-//! les deux réglages de la personne (le dossier des jeux, l'emplacement de
-//! RetroArch) et ne lance que des fichiers trouvés par le dernier scan : une
-//! page ne peut pas faire exécuter un chemin de son choix.
+//! Le moteur (dépôt Squad-retro) fait le travail : reconnaître les jeux,
+//! écrire les configs, préparer les commandes, installer les émulateurs,
+//! tenir la room. Ici, l'app garde l'état de la personne, télécharge, lance
+//! les processus et prévient la fenêtre (événements « retro-… »).
 //!
-//! Tout vit dans `retro.json` et `retro/` (configs, sauvegardes), à côté des
-//! autres réglages de l'app.
+//! Sécurité : la fenêtre ne peut lancer que des fichiers trouvés par le
+//! dernier scan, et l'app ne télécharge que les adresses des manifestes
+//! publiés dans le dépôt Squad-retro, vérifiées par empreinte.
+//!
+//! Tout vit dans `<données de l'app>/retro/` et `retro.json`.
 
 use serde::{Deserialize, Serialize};
 use squad_retro::bibliotheque::{self, Bibliotheque, Options};
+use squad_retro::catalogue::{Catalogue, Statut};
+use squad_retro::historique::{Historique, Partie};
+use squad_retro::installation::{self, Etat};
+use squad_retro::manettes::{self, BoutonPad, Etape};
+use squad_retro::mods::{self, CatalogueMods, Installes};
+use squad_retro::netplay::{self, Invitation, Place, Role, Room, Session};
 use squad_retro::region::ORDRE_PAR_DEFAUT;
-use squad_retro::{lancement, Console, Emplacements, Region};
+use squad_retro::room_reseau::{self, ClientRoom, Nouvelle, ServeurRoom};
+use squad_retro::versions::{Action, Canal, Validees};
+use squad_retro::{diagnostic, lancement, sauvegarde, Console, Emplacements, Fiche, Profil, Region};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::process::Child;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use tauri::{AppHandle, Emitter, Manager};
 
 /// Ce que la personne a choisi.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ReglagesRetro {
     /// Le dossier qui contient `nes/`, `snes/`… (et `dats/` pour les bases).
     pub dossier_jeux: Option<String>,
-    /// L'exécutable RetroArch.
+    /// Un RetroArch déjà installé (sinon celui installé par SQUAD).
     pub retroarch: Option<String>,
+    /// Le pseudo affiché en netplay.
+    #[serde(default)]
+    pub pseudo: Option<String>,
+    #[serde(default)]
+    pub canal: Canal,
+    /// La révision des versions validées déjà appliquée.
+    #[serde(default)]
+    pub revision: u32,
 }
 
-/// Une version d'un jeu, telle que la page la voit.
 #[derive(Serialize, Clone)]
 pub struct VarianteVisible {
     pub chemin: String,
     pub nom: String,
     pub region: Region,
     pub reconnu: bool,
+    /// Vrai si c'est une variante installée par un mod.
+    pub mod_installe: bool,
 }
 
-/// Un jeu, tel que la page le voit.
 #[derive(Serialize, Clone)]
 pub struct FicheVisible {
     pub console: Console,
     pub console_nom: &'static str,
     pub titre: String,
+    pub statut: Statut,
+    pub statut_texte: &'static str,
+    pub notes: String,
+    pub joueurs: u8,
+    pub netplay: bool,
+    /// Temps joué, en secondes.
+    pub temps: u64,
     pub variantes: Vec<VarianteVisible>,
+}
+
+#[derive(Serialize, Clone)]
+pub struct ConsoleVisible {
+    pub console: Console,
+    pub nom: &'static str,
+    /// Ce qui manque, en clair (vide = prête).
+    pub manques: Vec<String>,
+    /// Vrai si l'installation automatique peut tout régler.
+    pub installable: bool,
+    pub configuree: bool,
+}
+
+#[derive(Serialize, Clone)]
+pub struct EtatVisible {
+    pub reglages: ReglagesRetro,
+    pub consoles: Vec<ConsoleVisible>,
+    pub versions: BTreeMap<String, String>,
+    pub dossier_bios: String,
+    pub manettes: Vec<String>,
+}
+
+#[derive(Serialize, Clone)]
+pub struct ProgresInstallation {
+    pub composant: String,
+    pub etape: String,
+    pub fait: usize,
+    pub total: usize,
 }
 
 pub struct Retro {
     reglages: Mutex<ReglagesRetro>,
     fichier: Option<PathBuf>,
-    /// `<données de l'app>/retro` : configs RetroArch et sauvegardes.
     donnees: PathBuf,
     derniere: Mutex<Bibliotheque>,
+    profils: Mutex<BTreeMap<Console, Profil>>,
+    historique: Mutex<Historique>,
+    catalogue: Mutex<Catalogue>,
+    catalogue_mods: Mutex<CatalogueMods>,
+    mods_installes: Mutex<Installes>,
+    erreurs: Mutex<Vec<String>>,
+    partie_test: Mutex<Option<Child>>,
+    manettes: Mutex<Vec<String>>,
+    serveur: Mutex<Option<Arc<ServeurRoom>>>,
+    client: Mutex<Option<Arc<ClientRoom>>>,
+    /// La partie prévue par la room : lancée à la fin du compte à rebours.
+    prevue: Mutex<Option<(String, Session)>>,
+}
+
+fn lire_json<T: for<'a> Deserialize<'a> + Default>(f: &Path) -> T {
+    fs::read_to_string(f).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+}
+
+fn ecrire_json<T: Serialize>(f: &Path, v: &T) {
+    if let Some(d) = f.parent() {
+        let _ = fs::create_dir_all(d);
+    }
+    if let Ok(t) = serde_json::to_string_pretty(v) {
+        let _ = fs::write(f, t);
+    }
 }
 
 impl Retro {
     pub fn charger(donnees_app: Option<PathBuf>) -> Self {
         let fichier = donnees_app.as_ref().map(|d| d.join("retro.json"));
-        let reglages = fichier
-            .as_deref()
-            .and_then(|f| fs::read_to_string(f).ok())
-            .and_then(|t| serde_json::from_str(&t).ok())
-            .unwrap_or_default();
+        let reglages = fichier.as_deref().map(lire_json).unwrap_or_default();
         let donnees = donnees_app.unwrap_or_else(|| PathBuf::from(".")).join("retro");
+        let profils: BTreeMap<Console, Profil> = lire_json(&donnees.join("profils.json"));
+        let catalogue = fs::read_to_string(donnees.join("catalogue.json"))
+            .ok()
+            .and_then(|t| Catalogue::lire(&t).ok())
+            .unwrap_or_default();
         Retro {
             reglages: Mutex::new(reglages),
             fichier,
+            historique: Mutex::new(Historique::charger(&donnees.join("historique.json"))),
+            catalogue_mods: Mutex::new(lire_json(&donnees.join("mods-catalogue.json"))),
+            mods_installes: Mutex::new(Installes::charger(&donnees.join("variantes").join("mods.json"))),
+            catalogue: Mutex::new(catalogue),
+            profils: Mutex::new(profils),
             donnees,
             derniere: Mutex::new(Bibliotheque::default()),
+            erreurs: Mutex::new(Vec::new()),
+            partie_test: Mutex::new(None),
+            manettes: Mutex::new(Vec::new()),
+            serveur: Mutex::new(None),
+            client: Mutex::new(None),
+            prevue: Mutex::new(None),
         }
     }
 
@@ -74,93 +166,691 @@ impl Retro {
         self.reglages.lock().unwrap().clone()
     }
 
+    fn modifier(&self, f: impl FnOnce(&mut ReglagesRetro)) {
+        f(&mut self.reglages.lock().unwrap());
+        if let Some(fichier) = &self.fichier {
+            ecrire_json(fichier, &self.reglages());
+        }
+    }
+
     pub fn choisir_dossier_jeux(&self, dossier: &Path) {
-        self.reglages.lock().unwrap().dossier_jeux = Some(dossier.to_string_lossy().into_owned());
-        self.ecrire();
+        self.modifier(|r| r.dossier_jeux = Some(dossier.to_string_lossy().into_owned()));
+    }
+    pub fn choisir_retroarch(&self, exe: Option<&Path>) {
+        self.modifier(|r| r.retroarch = exe.map(|e| e.to_string_lossy().into_owned()));
+    }
+    pub fn choisir_pseudo(&self, pseudo: &str) {
+        let p: String = pseudo.trim().chars().filter(|c| !c.is_control()).take(24).collect();
+        self.modifier(|r| r.pseudo = (!p.is_empty()).then_some(p));
+    }
+    pub fn choisir_canal(&self, canal: Canal) {
+        self.modifier(|r| {
+            r.canal = canal;
+            r.revision = 0;
+        });
     }
 
-    pub fn choisir_retroarch(&self, exe: &Path) {
-        self.reglages.lock().unwrap().retroarch = Some(exe.to_string_lossy().into_owned());
-        self.ecrire();
-    }
-
-    fn ecrire(&self) {
-        let Some(fichier) = &self.fichier else { return };
-        if let Some(dossier) = fichier.parent() {
-            let _ = fs::create_dir_all(dossier);
+    pub fn emplacements(&self) -> Emplacements {
+        match self.reglages().retroarch {
+            Some(exe) => Emplacements::avec_retroarch(Path::new(&exe), &self.donnees),
+            None => Emplacements::geres(&self.donnees),
         }
-        if let Ok(texte) = serde_json::to_string_pretty(&*self.reglages.lock().unwrap()) {
-            let _ = fs::write(fichier, texte);
+    }
+
+    pub fn noter_erreur(&self, e: &str) {
+        let mut erreurs = self.erreurs.lock().unwrap();
+        erreurs.push(e.to_string());
+        let trop = erreurs.len().saturating_sub(50);
+        erreurs.drain(..trop);
+    }
+
+    fn pseudo(&self) -> String {
+        self.reglages().pseudo.unwrap_or_else(|| "Joueur".into())
+    }
+
+    pub fn profil(&self, console: Console) -> Profil {
+        self.profils.lock().unwrap().get(&console).cloned().unwrap_or_else(|| Profil::par_defaut(console))
+    }
+
+    pub fn enregistrer_profil(&self, profil: Profil) -> Result<(), String> {
+        if let Some(m) = &profil.mapping {
+            let conflits = m.conflits();
+            if !conflits.is_empty() {
+                return Err(format!("Un même bouton sert deux fois ({conflits:?}) : corrige le mapping."));
+            }
+        }
+        let mut profils = self.profils.lock().unwrap();
+        profils.insert(profil.console, profil);
+        ecrire_json(&self.donnees.join("profils.json"), &*profils);
+        Ok(())
+    }
+
+    pub fn etat(&self) -> EtatVisible {
+        let ou = self.emplacements();
+        let profils = self.profils.lock().unwrap().clone();
+        EtatVisible {
+            reglages: self.reglages(),
+            consoles: Console::TOUTES
+                .into_iter()
+                .map(|c| {
+                    let m = lancement::manques(c, &ou);
+                    ConsoleVisible {
+                        console: c,
+                        nom: c.nom(),
+                        installable: m.iter().all(|x| x.installable()),
+                        manques: m.iter().map(|x| x.message(c)).collect(),
+                        configuree: profils.get(&c).map(|p| p.configure).unwrap_or(false),
+                    }
+                })
+                .collect(),
+            versions: Etat::charger(&ou).versions(),
+            dossier_bios: ou.bios().to_string_lossy().into_owned(),
+            manettes: self.manettes.lock().unwrap().clone(),
         }
     }
 
-    /// Scanne le dossier des jeux (lent : à appeler hors du fil de la fenêtre).
+    /// Scanne le dossier des jeux et les variantes installées par des mods.
     pub fn scanner(&self) -> Result<Vec<FicheVisible>, String> {
-        let dossier = self
-            .reglages()
-            .dossier_jeux
-            .ok_or_else(|| "Choisis d'abord le dossier de tes jeux.".to_string())?;
+        let dossier = self.reglages().dossier_jeux.ok_or_else(|| "Choisis d'abord le dossier de tes jeux.".to_string())?;
         let racine = PathBuf::from(dossier);
         if !racine.is_dir() {
             return Err(format!("Le dossier {} est introuvable.", racine.display()));
         }
         let bases = bibliotheque::charger_bases(&racine.join("dats"));
-        let biblio = Bibliotheque::scanner(&racine, &Options { bases: &bases, ordre: &ORDRE_PAR_DEFAUT });
-        let visibles = biblio.fiches.iter().map(visible).collect();
+        let options = Options { bases: &bases, ordre: &ORDRE_PAR_DEFAUT };
+        let mut biblio = Bibliotheque::scanner(&racine, &options);
+        let variantes = Bibliotheque::scanner(&self.donnees.join("variantes"), &options);
+        for f in variantes.fiches {
+            match biblio.fiches.iter_mut().find(|x| x.console == f.console && x.titre.eq_ignore_ascii_case(&f.titre)) {
+                Some(x) => x.variantes.extend(f.variantes),
+                None => biblio.fiches.push(f),
+            }
+        }
+        biblio.fiches.sort_by_key(|a| (a.console, a.titre.to_lowercase()));
         *self.derniere.lock().unwrap() = biblio;
-        Ok(visibles)
+        Ok(self.visibles(|_| true))
     }
 
-    /// Lance une version d'un jeu trouvée par le dernier scan.
-    pub fn lancer(&self, chemin: &str) -> Result<(), String> {
-        let (console, variante) = {
-            let biblio = self.derniere.lock().unwrap();
-            biblio
-                .fiches
+    fn visibles(&self, filtre: impl Fn(&Fiche) -> bool) -> Vec<FicheVisible> {
+        let biblio = self.derniere.lock().unwrap();
+        biblio.fiches.iter().filter(|f| filtre(f)).map(|f| self.visible(f)).collect()
+    }
+
+    fn visible(&self, fiche: &Fiche) -> FicheVisible {
+        let catalogue = self.catalogue.lock().unwrap();
+        let info = catalogue.info(fiche.console, &fiche.titre);
+        let variantes_mods = self.donnees.join("variantes");
+        FicheVisible {
+            console: fiche.console,
+            console_nom: fiche.console.nom(),
+            titre: fiche.titre.clone(),
+            statut: info.map(|i| i.statut).unwrap_or_default(),
+            statut_texte: info.map(|i| i.statut).unwrap_or_default().texte(),
+            notes: info.map(|i| i.notes.clone()).unwrap_or_default(),
+            joueurs: info.map(|i| i.joueurs).unwrap_or(1),
+            netplay: info.map(|i| i.netplay).unwrap_or(false),
+            temps: self.historique.lock().unwrap().temps(fiche.console, &fiche.titre),
+            variantes: fiche
+                .variantes
                 .iter()
-                .flat_map(|f| f.variantes.iter().map(move |v| (f.console, v)))
-                .find(|(_, v)| v.chemin.to_string_lossy() == chemin)
-                .map(|(c, v)| (c, v.clone()))
-                .ok_or_else(|| "Ce jeu n'est plus dans la bibliothèque : relance le scan.".to_string())?
-        };
-        let retroarch = self
-            .reglages()
-            .retroarch
-            .ok_or_else(|| "Choisis d'abord retroarch.exe dans les réglages.".to_string())?;
-        let ou = Emplacements::depuis_retroarch(Path::new(&retroarch), &self.donnees);
-
-        lancement::verifier(console, &ou)?;
-        lancement::preparer(console, &ou, &self.donnees.join("sauvegardes"))
-            .map_err(|e| format!("Impossible d'écrire la config de {} : {e}", console.nom()))?;
-
-        let commande = lancement::commande(console, &variante, &ou);
-        let mut process = commande.vers_process();
-        if let Some(dossier) = commande.programme.parent() {
-            process.current_dir(dossier);
+                .map(|v| VarianteVisible {
+                    chemin: v.chemin.to_string_lossy().into_owned(),
+                    nom: v.nom.clone(),
+                    region: v.region,
+                    reconnu: v.reconnu,
+                    mod_installe: v.chemin.starts_with(&variantes_mods),
+                })
+                .collect(),
         }
-        process
+    }
+
+    pub fn rechercher(&self, texte: &str) -> Vec<FicheVisible> {
+        let biblio = self.derniere.lock().unwrap().clone();
+        biblio.rechercher(texte).into_iter().map(|f| self.visible(f)).collect()
+    }
+
+    /// Un jeu au hasard, avec au moins `joueurs` joueurs (1 = tous les jeux).
+    pub fn au_hasard(&self, joueurs: u8, console: Option<Console>) -> Option<FicheVisible> {
+        let biblio = self.derniere.lock().unwrap().clone();
+        let catalogue = self.catalogue.lock().unwrap().clone();
+        let graine = room_reseau::maintenant_ms();
+        biblio
+            .au_hasard(
+                |f| {
+                    console.map(|c| c == f.console).unwrap_or(true)
+                        && catalogue.info(f.console, &f.titre).map(|i| i.joueurs).unwrap_or(1) >= joueurs
+                },
+                graine,
+            )
+            .map(|f| self.visible(f))
+    }
+
+    pub fn reprendre(&self) -> Vec<Partie> {
+        self.historique.lock().unwrap().reprendre(5).into_iter().cloned().collect()
+    }
+
+    pub fn doublons(&self) -> Vec<Vec<String>> {
+        self.derniere
+            .lock()
+            .unwrap()
+            .doublons()
+            .into_iter()
+            .map(|g| g.into_iter().map(|p| p.to_string_lossy().into_owned()).collect())
+            .collect()
+    }
+
+    /// Retrouve un fichier du dernier scan (le seul moyen de lancer quelque chose).
+    fn trouver(&self, chemin: &str) -> Result<(Console, String, squad_retro::Variante), String> {
+        let biblio = self.derniere.lock().unwrap();
+        biblio
+            .fiches
+            .iter()
+            .flat_map(|f| f.variantes.iter().map(move |v| (f, v)))
+            .find(|(_, v)| v.chemin.to_string_lossy() == chemin)
+            .map(|(f, v)| (f.console, f.titre.clone(), v.clone()))
+            .ok_or_else(|| "Ce jeu n'est plus dans la bibliothèque : relance le scan.".to_string())
+    }
+
+    /// Lance un jeu (en solo ou en netplay). Retourne le processus lancé.
+    pub fn lancer(self: &Arc<Self>, chemin: &str, session: Option<Session>, app: Option<AppHandle>) -> Result<(), String> {
+        let resultat = self.lancer_sans_noter(chemin, session, app);
+        if let Err(e) = &resultat {
+            self.noter_erreur(e);
+        }
+        resultat
+    }
+
+    fn lancer_sans_noter(self: &Arc<Self>, chemin: &str, session: Option<Session>, app: Option<AppHandle>) -> Result<(), String> {
+        let (console, titre, variante) = self.trouver(chemin)?;
+        let ou = self.emplacements();
+        lancement::verifier(console, &ou)?;
+        let options = self
+            .catalogue
+            .lock()
+            .unwrap()
+            .info(console, &titre)
+            .map(|i| i.options.clone())
+            .unwrap_or_default();
+        let profil = self.profil(console).avec_options(&options);
+        lancement::preparer(console, &ou, &profil, session.as_ref())
+            .map_err(|e| format!("Impossible d'écrire la config de {} : {e}", console.nom()))?;
+        let commande = lancement::commande(console, &variante.chemin, &ou, session.as_ref());
+        let mut enfant = commande
+            .vers_process()
             .spawn()
-            .map(|_| ())
-            .map_err(|e| format!("Impossible de lancer {} : {e}", commande.programme.display()))
+            .map_err(|e| format!("Impossible de lancer {} : {e}", commande.programme.display()))?;
+
+        let debut = room_reseau::maintenant_ms();
+        self.historique.lock().unwrap().commencer(Partie {
+            console,
+            titre: titre.clone(),
+            chemin: variante.chemin.clone(),
+            debut_ms: debut,
+            duree_s: 0,
+        });
+        self.ecrire_historique();
+        if let Some(app) = &app {
+            let _ = app.emit("retro-partie", serde_json::json!({ "titre": titre, "en_cours": true }));
+        }
+        // Un fil attend la fin de la partie pour noter le temps joué.
+        let moi = self.clone();
+        let chemin_partie = variante.chemin.clone();
+        std::thread::spawn(move || {
+            let _ = enfant.wait();
+            moi.historique.lock().unwrap().terminer(&chemin_partie, room_reseau::maintenant_ms());
+            moi.ecrire_historique();
+            if let Some(app) = app {
+                let _ = app.emit("retro-partie", serde_json::json!({ "titre": titre, "en_cours": false }));
+            }
+        });
+        Ok(())
+    }
+
+    fn ecrire_historique(&self) {
+        let _ = self.historique.lock().unwrap().ecrire(&self.donnees.join("historique.json"));
+    }
+
+    /// La partie test de l'assistant : le premier jeu de la console, 30 secondes.
+    pub fn partie_test(self: &Arc<Self>, console: Console) -> Result<String, String> {
+        let (chemin, titre) = {
+            let biblio = self.derniere.lock().unwrap();
+            let f = biblio.de(console).next().ok_or_else(|| format!("Aucun jeu {} pour la partie test.", console.nom()))?;
+            (f.preferee().chemin.clone(), f.titre.clone())
+        };
+        let ou = self.emplacements();
+        lancement::verifier(console, &ou)?;
+        lancement::preparer(console, &ou, &self.profil(console), None).map_err(|e| e.to_string())?;
+        let enfant = lancement::commande(console, &chemin, &ou, None)
+            .vers_process()
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        *self.partie_test.lock().unwrap() = Some(enfant);
+        let moi = self.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_secs(30));
+            if let Some(mut e) = moi.partie_test.lock().unwrap().take() {
+                let _ = e.kill();
+            }
+        });
+        Ok(titre)
+    }
+
+    pub fn arreter_partie_test(&self) {
+        if let Some(mut e) = self.partie_test.lock().unwrap().take() {
+            let _ = e.kill();
+        }
+    }
+
+    // ----- Installation et mises à jour -----
+
+    /// Récupère les versions validées et le catalogue, puis installe ce qui manque.
+    pub async fn installer_tout(self: Arc<Self>, app: AppHandle) -> Result<Vec<String>, String> {
+        let canal = self.reglages().canal;
+        let texte = telecharger_texte(&canal.url_versions()).await?;
+        let validees = Validees::lire(&texte)?;
+        if let Ok(t) = telecharger_texte(&Canal::url_catalogue()).await {
+            if let Ok(c) = Catalogue::lire(&t) {
+                let _ = fs::write(self.donnees.join("catalogue.json"), &t);
+                *self.catalogue.lock().unwrap() = c;
+            }
+        }
+        if let Ok(t) = telecharger_texte(&format!("{}/mods.json", squad_retro::versions::BASE_MANIFESTES)).await {
+            if let Ok(c) = CatalogueMods::lire(&t) {
+                ecrire_json(&self.donnees.join("mods-catalogue.json"), &c);
+                *self.catalogue_mods.lock().unwrap() = c;
+            }
+        }
+        let ou = self.emplacements();
+        let mut actions = validees.a_faire(&Etat::charger(&ou).versions());
+        // Avec un RetroArch personnel, on n'installe pas celui de SQUAD.
+        if self.reglages().retroarch.is_some() {
+            actions.retain(|a| !matches!(a, Action::Installer { nom, .. } | Action::MettreAJour { nom, .. } if nom == "retroarch"));
+        }
+        let total = actions.len();
+        let mut faits = Vec::new();
+        for (i, action) in actions.into_iter().enumerate() {
+            let (nom, composant) = match action {
+                Action::Installer { nom, composant } | Action::MettreAJour { nom, composant, .. } => (nom, composant),
+            };
+            let progres = |etape: &str| {
+                let _ = app.emit(
+                    "retro-installation",
+                    ProgresInstallation { composant: nom.clone(), etape: etape.into(), fait: i, total },
+                );
+            };
+            progres("Téléchargement");
+            let octets = telecharger(&composant.url).await?;
+            progres("Installation");
+            let ou2 = ou.clone();
+            let nom2 = nom.clone();
+            tauri::async_runtime::spawn_blocking(move || installation::installer(&nom2, &composant, &octets, &ou2))
+                .await
+                .map_err(|_| "L'installation a planté.".to_string())??;
+            faits.push(nom);
+        }
+        self.modifier(|r| r.revision = validees.revision);
+        let _ = app.emit(
+            "retro-installation",
+            ProgresInstallation { composant: String::new(), etape: "Terminé".into(), fait: total, total },
+        );
+        Ok(faits)
+    }
+
+    pub fn retour_arriere(&self, nom: &str) -> Result<String, String> {
+        installation::retour_arriere(nom, &self.emplacements())
+    }
+
+    pub fn integrite(&self) -> BTreeMap<String, Vec<String>> {
+        let ou = self.emplacements();
+        Etat::charger(&ou)
+            .composants
+            .keys()
+            .map(|n| (n.clone(), installation::verifier_integrite(n, &ou)))
+            .collect()
+    }
+
+    // ----- Mods -----
+
+    /// Les mods disponibles pour une version d'un jeu.
+    pub fn mods_pour(&self, chemin: &str) -> Result<Vec<mods::ModRetro>, String> {
+        let (_, _, v) = self.trouver(chemin)?;
+        let sha1 = v.empreintes.map(|e| e.sha1).unwrap_or_default();
+        Ok(self.catalogue_mods.lock().unwrap().pour(&sha1).into_iter().cloned().collect())
+    }
+
+    /// Installe (ou met à jour) un mod sur une version d'un jeu.
+    pub async fn installer_mod(self: Arc<Self>, id: String, chemin: String) -> Result<String, String> {
+        let (console, _, v) = self.trouver(&chemin)?;
+        let m = self
+            .catalogue_mods
+            .lock()
+            .unwrap()
+            .mods
+            .iter()
+            .find(|m| m.id == id)
+            .cloned()
+            .ok_or("Mod inconnu.")?;
+        let patch = telecharger(&m.url).await?;
+        let dossier = self.donnees.join("variantes").join(console.dossier());
+        let moi = self.clone();
+        let fichier = tauri::async_runtime::spawn_blocking(move || {
+            let mut installes = moi.mods_installes.lock().unwrap();
+            let r = mods::installer(&m, &v.chemin, &patch, &dossier, &mut installes);
+            let _ = installes.ecrire(&moi.donnees.join("variantes").join("mods.json"));
+            r
+        })
+        .await
+        .map_err(|_| "L'installation du mod a planté.".to_string())??;
+        Ok(fichier.to_string_lossy().into_owned())
+    }
+
+    /// Les mods installés qui ont une nouvelle version au catalogue.
+    pub fn mods_a_jour(&self) -> Vec<mods::ModRetro> {
+        let cat = self.catalogue_mods.lock().unwrap();
+        self.mods_installes.lock().unwrap().a_mettre_a_jour(&cat).into_iter().cloned().collect()
+    }
+
+    pub fn mod_retour_arriere(&self, id: &str) -> Result<String, String> {
+        let mut installes = self.mods_installes.lock().unwrap();
+        let r = mods::retour_arriere(id, &mut installes);
+        let _ = installes.ecrire(&self.donnees.join("variantes").join("mods.json"));
+        r
+    }
+
+    // ----- Outils -----
+
+    pub fn diagnostic(&self, version_app: &str) -> String {
+        diagnostic::rapport(&self.emplacements(), version_app, &self.erreurs.lock().unwrap())
+    }
+
+    pub fn exporter(&self, vers: &Path) -> Result<(), String> {
+        if let Some(f) = &self.fichier {
+            let _ = fs::copy(f, self.donnees.join("retro.json"));
+        }
+        let octets = sauvegarde::exporter(&self.donnees)?;
+        fs::write(vers, octets).map_err(|e| e.to_string())
+    }
+
+    pub fn restaurer(&self, depuis: &Path) -> Result<usize, String> {
+        let octets = fs::read(depuis).map_err(|e| e.to_string())?;
+        let n = sauvegarde::restaurer(&octets, &self.donnees)?;
+        if let Some(f) = &self.fichier {
+            let copie = self.donnees.join("retro.json");
+            if copie.is_file() {
+                let _ = fs::copy(&copie, f);
+                *self.reglages.lock().unwrap() = lire_json(f);
+            }
+        }
+        *self.profils.lock().unwrap() = lire_json(&self.donnees.join("profils.json"));
+        *self.historique.lock().unwrap() = Historique::charger(&self.donnees.join("historique.json"));
+        Ok(n)
+    }
+
+    /// Compresse une image disque (RVZ ou CHD). L'original reste en place.
+    pub fn convertir(&self, chemin: &str) -> Result<String, String> {
+        let (console, _, v) = self.trouver(chemin)?;
+        let ou = self.emplacements();
+        let (commande, sortie) = lancement::conversion(console, &v.chemin, &ou)
+            .ok_or("Ce fichier est déjà compressé ou ne se compresse pas.")?;
+        if !commande.programme.is_file() {
+            return Err("L'outil de compression n'est pas installé : lance l'installation des émulateurs.".into());
+        }
+        let statut = commande.vers_process().status().map_err(|e| e.to_string())?;
+        if !statut.success() || !sortie.is_file() {
+            return Err("La compression a échoué : l'original n'a pas été touché.".into());
+        }
+        Ok(sortie.to_string_lossy().into_owned())
+    }
+
+    // ----- Room et netplay -----
+
+    fn place(&self, chemin: &str) -> Result<(Console, String, Place), String> {
+        let (console, titre, v) = self.trouver(chemin)?;
+        let sha1 = match v.empreintes {
+            Some(e) => e.sha1,
+            None => squad_retro::installation::sha256(&fs::read(&v.chemin).map_err(|e| e.to_string())?),
+        };
+        Ok((
+            console,
+            titre,
+            Place { pseudo: self.pseudo(), pret: false, versions: Etat::charger(&self.emplacements()).versions(), sha1 },
+        ))
+    }
+
+    /// Ouvre une room pour ce jeu. Retourne le lien d'invitation.
+    pub fn heberger(self: &Arc<Self>, app: AppHandle, chemin: &str, max: usize, mot_de_passe: Option<String>, adresse: String) -> Result<String, String> {
+        self.quitter_room();
+        let (console, titre, place) = self.place(chemin)?;
+        let port_jeu = match console.moteur() {
+            squad_retro::Moteur::Dolphin => netplay::PORT_DOLPHIN,
+            _ => netplay::PORT_RETROARCH,
+        };
+        let id = format!("{:x}", room_reseau::maintenant_ms());
+        let room = Room::nouvelle(&id, console, &titre, place, max, mot_de_passe.is_some());
+        let session = Session { role: Role::Heberger { port: port_jeu }, pseudo: self.pseudo(), mot_de_passe: mot_de_passe.clone(), relais: None };
+        *self.prevue.lock().unwrap() = Some((chemin.to_string(), session));
+        let moi = self.clone();
+        let app2 = app.clone();
+        let serveur = ServeurRoom::ouvrir(room, room_reseau::PORT_ROOM, mot_de_passe, move |room, dans| {
+            moi.sur_room(&app2, room, dans);
+        })?;
+        serveur.diffuser();
+        *self.serveur.lock().unwrap() = Some(serveur);
+        Ok(Invitation { room: id, console, titre, adresse, port: room_reseau::PORT_ROOM, privee: self.prevue_privee() }.lien())
+    }
+
+    fn prevue_privee(&self) -> bool {
+        self.prevue.lock().unwrap().as_ref().map(|(_, s)| s.mot_de_passe.is_some()).unwrap_or(false)
+    }
+
+    /// Rejoint une room avec un lien d'invitation, pour la version du jeu choisie.
+    pub fn rejoindre(self: &Arc<Self>, app: AppHandle, lien: &str, chemin: &str, mot_de_passe: Option<String>) -> Result<(), String> {
+        self.quitter_room();
+        let inv = Invitation::lire(lien.trim())?;
+        let (console, _, place) = self.place(chemin)?;
+        if console != inv.console {
+            return Err(format!("Cette room est pour la {}, pas la {}.", inv.console.nom(), console.nom()));
+        }
+        let port_jeu = match console.moteur() {
+            squad_retro::Moteur::Dolphin => netplay::PORT_DOLPHIN,
+            _ => netplay::PORT_RETROARCH,
+        };
+        let session = Session {
+            role: Role::Rejoindre { adresse: inv.adresse.clone(), port: port_jeu },
+            pseudo: self.pseudo(),
+            mot_de_passe: mot_de_passe.clone(),
+            relais: None,
+        };
+        *self.prevue.lock().unwrap() = Some((chemin.to_string(), session));
+        let moi = self.clone();
+        let client = ClientRoom::rejoindre(&inv.adresse, inv.port, place, mot_de_passe, move |n| match n {
+            Nouvelle::Room { room, dans_ms } => moi.sur_room(&app, &room, dans_ms),
+            Nouvelle::Refus { raison } => {
+                let _ = app.emit("retro-room-refus", raison);
+            }
+        })?;
+        *self.client.lock().unwrap() = Some(client);
+        Ok(())
+    }
+
+    /// Chaque changement de la room : la fenêtre est prévenue, et le jeu se
+    /// lance chez chacun à la fin du compte à rebours.
+    fn sur_room(self: &Arc<Self>, app: &AppHandle, room: &Room, dans_ms: Option<u64>) {
+        let _ = app.emit("retro-room", serde_json::json!({ "room": room, "dans_ms": dans_ms }));
+        if let Some(ms) = dans_ms {
+            let moi = self.clone();
+            let app = app.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(ms));
+                let prevue = moi.prevue.lock().unwrap().take();
+                if let Some((chemin, session)) = prevue {
+                    // Les invités partent une seconde après l'hôte, le temps qu'il écoute.
+                    if matches!(session.role, Role::Rejoindre { .. }) {
+                        std::thread::sleep(Duration::from_secs(1));
+                    }
+                    if let Err(e) = moi.lancer(&chemin, Some(session), Some(app.clone())) {
+                        let _ = app.emit("retro-room-refus", e);
+                    }
+                }
+            });
+        }
+    }
+
+    pub fn pret(&self) -> Result<(), String> {
+        if let Some(s) = self.serveur.lock().unwrap().as_ref() {
+            s.pret_hote();
+            return Ok(());
+        }
+        match self.client.lock().unwrap().as_ref() {
+            Some(c) => c.pret(),
+            None => Err("Tu n'es dans aucune room.".into()),
+        }
+    }
+
+    pub fn lancer_room(&self) -> Result<u64, String> {
+        match self.serveur.lock().unwrap().as_ref() {
+            Some(s) => s.lancer(),
+            None => Err("Seul l'hôte lance la partie.".into()),
+        }
+    }
+
+    pub fn quitter_room(&self) {
+        if let Some(s) = self.serveur.lock().unwrap().take() {
+            s.fermer();
+        }
+        if let Some(c) = self.client.lock().unwrap().take() {
+            c.quitter();
+        }
+        *self.prevue.lock().unwrap() = None;
+    }
+
+    pub fn noter_manettes(&self, noms: Vec<String>) {
+        *self.manettes.lock().unwrap() = noms;
     }
 }
 
-fn visible(fiche: &squad_retro::Fiche) -> FicheVisible {
-    FicheVisible {
-        console: fiche.console,
-        console_nom: fiche.console.nom(),
-        titre: fiche.titre.clone(),
-        variantes: fiche
-            .variantes
-            .iter()
-            .map(|v| VarianteVisible {
-                chemin: v.chemin.to_string_lossy().into_owned(),
-                nom: v.nom.clone(),
-                region: v.region,
-                reconnu: v.reconnu,
-            })
-            .collect(),
+/// Les étapes de l'assistant, avec le profil actuel.
+#[derive(Serialize)]
+pub struct Assistant {
+    pub etapes: Vec<Etape>,
+    pub profil: Profil,
+    pub mapping: manettes::Mapping,
+}
+
+pub fn assistant(retro: &Retro, console: Console) -> Assistant {
+    let profil = retro.profil(console);
+    let mapping = profil.mapping.clone().unwrap_or_else(|| manettes::Mapping::par_defaut(console));
+    Assistant { etapes: manettes::etapes(console), profil, mapping }
+}
+
+/// Les adresses autorisées au téléchargement : le dépôt Squad-retro et les
+/// sites officiels des émulateurs. Le reste est refusé.
+fn adresse_autorisee(url: &str) -> bool {
+    const SITES: [&str; 5] = [
+        "https://raw.githubusercontent.com/Reskell/",
+        "https://github.com/",
+        "https://buildbot.libretro.com/",
+        "https://dl.dolphin-emu.org/",
+        "https://objects.githubusercontent.com/",
+    ];
+    SITES.iter().any(|s| url.starts_with(s))
+}
+
+/// Au-delà, on refuse (Dolphin et RetroArch font moins de 200 Mo).
+const TAILLE_MAX: u64 = 600 * 1024 * 1024;
+
+async fn telecharger(url: &str) -> Result<Vec<u8>, String> {
+    if !adresse_autorisee(url) {
+        return Err(format!("Adresse de téléchargement refusée : {url}"));
     }
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(900))
+        .user_agent("SQUAD-RETRO")
+        .build()
+        .map_err(|_| "Téléchargement impossible.".to_string())?;
+    let mut reponse = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|_| "Pas de connexion : réessaie dans un instant.".to_string())?;
+    if !reponse.status().is_success() {
+        return Err(format!("Téléchargement refusé ({}) : {url}", reponse.status()));
+    }
+    if reponse.content_length().is_some_and(|n| n > TAILLE_MAX) {
+        return Err("Fichier trop gros.".into());
+    }
+    let mut octets = Vec::new();
+    while let Some(m) = reponse.chunk().await.map_err(|_| "Téléchargement interrompu.".to_string())? {
+        if octets.len() as u64 + m.len() as u64 > TAILLE_MAX {
+            return Err("Fichier trop gros.".into());
+        }
+        octets.extend_from_slice(&m);
+    }
+    Ok(octets)
+}
+
+async fn telecharger_texte(url: &str) -> Result<String, String> {
+    let octets = telecharger(url).await?;
+    String::from_utf8(octets).map_err(|_| "Fichier illisible.".to_string())
+}
+
+/// Le fil qui écoute les manettes pour l'assistant : chaque bouton appuyé
+/// ou relâché part vers la fenêtre (« retro-manette »).
+pub fn demarrer_manettes(app: &AppHandle) {
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let Ok(mut gilrs) = gilrs::Gilrs::new() else { return };
+        let noter = |g: &gilrs::Gilrs, app: &AppHandle| {
+            let noms = g.gamepads().map(|(_, p)| p.name().to_string()).collect();
+            app.state::<Arc<Retro>>().noter_manettes(noms);
+        };
+        noter(&gilrs, &app);
+        loop {
+            while let Some(gilrs::Event { id, event, .. }) = gilrs.next_event() {
+                let (bouton, appuye) = match event {
+                    gilrs::EventType::ButtonPressed(b, _) => (b, true),
+                    gilrs::EventType::ButtonReleased(b, _) => (b, false),
+                    gilrs::EventType::Connected | gilrs::EventType::Disconnected => {
+                        noter(&gilrs, &app);
+                        let _ = app.emit("retro-manettes", ());
+                        continue;
+                    }
+                    _ => continue,
+                };
+                if let Some(b) = bouton_pad(bouton) {
+                    let _ = app.emit(
+                        "retro-manette",
+                        serde_json::json!({ "manette": usize::from(id), "bouton": b, "appuye": appuye }),
+                    );
+                }
+            }
+            std::thread::sleep(Duration::from_millis(8));
+        }
+    });
+}
+
+fn bouton_pad(b: gilrs::Button) -> Option<BoutonPad> {
+    use gilrs::Button::*;
+    Some(match b {
+        South => BoutonPad::Sud,
+        East => BoutonPad::Est,
+        West => BoutonPad::Ouest,
+        North => BoutonPad::Nord,
+        LeftTrigger => BoutonPad::L1,
+        RightTrigger => BoutonPad::R1,
+        LeftTrigger2 => BoutonPad::L2,
+        RightTrigger2 => BoutonPad::R2,
+        LeftThumb => BoutonPad::L3,
+        RightThumb => BoutonPad::R3,
+        Start => BoutonPad::Start,
+        Select => BoutonPad::Select,
+        DPadUp => BoutonPad::Haut,
+        DPadDown => BoutonPad::Bas,
+        DPadLeft => BoutonPad::Gauche,
+        DPadRight => BoutonPad::Droite,
+        _ => return None,
+    })
 }
 
 #[cfg(test)]
@@ -174,21 +864,31 @@ mod tests {
         fs::create_dir_all(&snes).unwrap();
         fs::write(snes.join("Jeu (France).sfc"), b"x").unwrap();
 
-        let retro = Retro::charger(Some(dir.join("app")));
-        assert!(retro.lancer("C:/Windows/System32/calc.exe").is_err());
+        let retro = Arc::new(Retro::charger(Some(dir.join("app"))));
+        assert!(retro.lancer("C:/Windows/System32/calc.exe", None, None).is_err());
 
         retro.choisir_dossier_jeux(&dir.join("jeux"));
         let fiches = retro.scanner().unwrap();
         assert_eq!(fiches.len(), 1);
         assert_eq!(fiches[0].titre, "Jeu");
 
-        // Trouvé par le scan, mais RetroArch n'est pas choisi : message clair.
-        let erreur = retro.lancer(&fiches[0].variantes[0].chemin).unwrap_err();
-        assert!(erreur.contains("retroarch"));
+        // Trouvé par le scan, mais les émulateurs ne sont pas installés : message clair.
+        let erreur = retro.lancer(&fiches[0].variantes[0].chemin, None, None).unwrap_err();
+        assert!(erreur.contains("installation des émulateurs"));
+        assert!(retro.diagnostic("test").contains("installation des émulateurs"));
 
         // Les réglages survivent à un redémarrage.
+        retro.choisir_pseudo("Swift");
         let relu = Retro::charger(Some(dir.join("app")));
         assert!(relu.reglages().dossier_jeux.is_some());
+        assert_eq!(relu.reglages().pseudo.as_deref(), Some("Swift"));
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn adresses() {
+        assert!(adresse_autorisee("https://buildbot.libretro.com/stable/x.7z"));
+        assert!(!adresse_autorisee("https://exemple.com/virus.exe"));
+        assert!(!adresse_autorisee("http://buildbot.libretro.com/x"));
     }
 }

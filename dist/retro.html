@@ -3,157 +3,425 @@
 <head>
 <meta charset="utf-8" />
 <title>SQUAD//RETRO</title>
-<!-- SQUAD//RETRO, vague 1 : la page de test locale de l'app. Elle choisit le
-     dossier des jeux et RetroArch, scanne la bibliothèque et lance un jeu.
-     La vraie section viendra dans le site, à côté de PLAY. -->
+<!-- SQUAD//RETRO : la fenêtre locale de l'app (bibliothèque, assistant,
+     installation, room). Elle ne dépend pas du site : c'est aussi la base de
+     l'app publique. Toute la logique est dans le moteur (dépôt Squad-retro),
+     appelée via les commandes retro_* (src-tauri/src/retro.rs). -->
 <style>
-  :root { --fond:#0a0d13; --carte:#131826; --bord:#232a3d; --texte:#e7ecf6; --gris:#8b93a7; --accent:#7c5cff; --ok:#3ecf8e; --erreur:#ff6b6b; }
-  * { box-sizing: border-box; }
-  body { margin:0; background:var(--fond); color:var(--texte); font:14px/1.45 system-ui, "Segoe UI", sans-serif; display:grid; grid-template-columns:220px 1fr; height:100vh; }
-  aside { border-right:1px solid var(--bord); padding:20px 12px; display:flex; flex-direction:column; gap:4px; }
-  h1 { font-size:18px; letter-spacing:.08em; margin:0 8px 16px; }
-  .console { background:none; border:0; color:var(--texte); text-align:left; padding:9px 12px; border-radius:8px; cursor:pointer; font:inherit; display:flex; justify-content:space-between; }
-  .console:hover { background:var(--carte); }
-  .console.active { background:var(--accent); }
-  .console small { color:var(--gris); }
-  .console.active small { color:#fff; }
-  main { display:flex; flex-direction:column; min-width:0; }
-  header { padding:16px 24px; border-bottom:1px solid var(--bord); display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
-  .reglage { display:flex; flex-direction:column; gap:2px; min-width:0; }
-  .reglage span { color:var(--gris); font-size:12px; }
-  .reglage code { font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:300px; }
-  button.action { background:var(--carte); border:1px solid var(--bord); color:var(--texte); padding:8px 14px; border-radius:8px; cursor:pointer; font:inherit; }
-  button.action:hover { border-color:var(--accent); }
-  button.jouer { background:var(--accent); border:0; color:#fff; padding:8px 18px; border-radius:8px; cursor:pointer; font:inherit; font-weight:600; }
-  #message { padding:10px 24px; min-height:20px; color:var(--gris); }
-  #message.erreur { color:var(--erreur); }
-  #message.ok { color:var(--ok); }
-  #liste { overflow:auto; padding:8px 24px 24px; display:grid; gap:8px; }
-  .jeu { background:var(--carte); border:1px solid var(--bord); border-radius:10px; padding:12px 16px; display:flex; align-items:center; gap:16px; }
-  .jeu .titre { font-weight:600; flex:1; min-width:0; }
+  :root { --fond:#0a0d13; --carte:#131826; --carte2:#192033; --bord:#232a3d; --texte:#e7ecf6; --gris:#8b93a7; --accent:#7c5cff; --ok:#3ecf8e; --attention:#f5b342; --erreur:#ff6b6b; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--fond); color:var(--texte); font:14px/1.45 system-ui,"Segoe UI",sans-serif; display:grid; grid-template-columns:230px 1fr; height:100vh; overflow:hidden; }
+  aside { border-right:1px solid var(--bord); padding:18px 10px; display:flex; flex-direction:column; gap:2px; overflow:auto; }
+  h1 { font-size:18px; letter-spacing:.08em; margin:0 10px 14px; }
+  h2 { font-size:16px; margin:0 0 12px; }
+  h3 { font-size:14px; margin:18px 0 8px; color:var(--gris); font-weight:600; text-transform:uppercase; letter-spacing:.06em; }
+  .nav { background:none; border:0; color:var(--texte); text-align:left; padding:9px 12px; border-radius:8px; cursor:pointer; font:inherit; display:flex; justify-content:space-between; align-items:center; gap:8px; }
+  .nav:hover, .nav:focus-visible { background:var(--carte); outline:none; }
+  .nav.active { background:var(--accent); }
+  .nav small { color:var(--gris); }
+  .nav.active small { color:#fff; }
+  .pastille { width:8px; height:8px; border-radius:50%; background:var(--ok); flex:none; }
+  .pastille.non { background:var(--attention); }
+  .sep { height:1px; background:var(--bord); margin:10px 6px; }
+  main { display:flex; flex-direction:column; min-width:0; min-height:0; }
+  header { padding:14px 24px; border-bottom:1px solid var(--bord); display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  input, select { background:var(--fond); color:var(--texte); border:1px solid var(--bord); border-radius:8px; padding:8px 10px; font:inherit; }
+  input:focus, select:focus, button:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
+  #recherche { flex:1; min-width:180px; }
+  button.b { background:var(--carte); border:1px solid var(--bord); color:var(--texte); padding:8px 14px; border-radius:8px; cursor:pointer; font:inherit; }
+  button.b:hover { border-color:var(--accent); }
+  button.p { background:var(--accent); border:0; color:#fff; padding:8px 18px; border-radius:8px; cursor:pointer; font:inherit; font-weight:600; }
+  button:disabled { opacity:.45; cursor:default; }
+  #message { padding:8px 24px; min-height:34px; color:var(--gris); }
+  #message.erreur { color:var(--erreur); } #message.ok { color:var(--ok); }
+  #vue { overflow:auto; padding:6px 24px 40px; flex:1; }
+  .grille { display:grid; gap:8px; }
+  .jeu { background:var(--carte); border:1px solid var(--bord); border-radius:10px; padding:12px 16px; display:flex; align-items:center; gap:14px; flex-wrap:wrap; }
+  .jeu .titre { font-weight:600; flex:1; min-width:200px; }
   .jeu .titre small { display:block; color:var(--gris); font-weight:400; font-size:12px; }
-  select { background:var(--fond); color:var(--texte); border:1px solid var(--bord); border-radius:6px; padding:6px; font:inherit; max-width:280px; }
-  .vide { color:var(--gris); padding:40px 0; text-align:center; }
+  .badge { font-size:11px; padding:2px 8px; border-radius:20px; background:var(--carte2); color:var(--gris); margin-right:4px; white-space:nowrap; }
+  .badge.ok { color:var(--ok); } .badge.att { color:var(--attention); } .badge.err { color:var(--erreur); }
+  .cartes { display:grid; grid-template-columns:repeat(auto-fill,minmax(210px,1fr)); gap:10px; }
+  .carte { background:var(--carte); border:1px solid var(--bord); border-radius:10px; padding:14px; }
+  .carte b { display:block; margin-bottom:4px; }
+  .carte small { color:var(--gris); }
+  .vide { color:var(--gris); padding:30px 0; }
+  .ligne { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin:8px 0; }
+  .ligne label { color:var(--gris); min-width:150px; }
+  code { font-size:12px; color:var(--gris); word-break:break-all; }
+  pre { background:var(--carte); border:1px solid var(--bord); border-radius:8px; padding:12px; white-space:pre-wrap; font-size:12px; }
+  .barre { height:8px; background:var(--carte2); border-radius:8px; overflow:hidden; margin:8px 0; }
+  .barre div { height:100%; background:var(--accent); width:0; transition:width .3s; }
+  /* La manette dessinée de l'assistant */
+  .pad { display:grid; grid-template-columns:repeat(4, minmax(120px,1fr)); gap:8px; margin:12px 0; }
+  .touche { background:var(--carte); border:1px solid var(--bord); border-radius:10px; padding:10px; text-align:center; }
+  .touche.allumee { background:var(--accent); border-color:var(--accent); }
+  .touche small { display:block; color:var(--gris); font-size:11px; margin-top:2px; }
+  .touche.allumee small { color:#fff; }
+  .touche.attend { outline:2px dashed var(--attention); }
+  .compte { font-size:48px; font-weight:700; text-align:center; padding:20px; color:var(--accent); }
+  .places { display:grid; gap:6px; margin:10px 0; }
+  .place { background:var(--carte); border:1px solid var(--bord); border-radius:8px; padding:8px 12px; display:flex; justify-content:space-between; }
 </style>
 </head>
 <body>
 <aside>
   <h1>SQUAD//RETRO</h1>
+  <button class="nav" data-vue="accueil">Accueil</button>
+  <button class="nav" data-vue="room">Jouer en ligne</button>
+  <div class="sep"></div>
   <div id="consoles"></div>
+  <div class="sep"></div>
+  <button class="nav" data-vue="installation">Émulateurs</button>
+  <button class="nav" data-vue="reglages">Réglages</button>
 </aside>
 <main>
   <header>
-    <div class="reglage"><span>Dossier des jeux</span><code id="dossier">non choisi</code></div>
-    <button class="action" id="choisirDossier">Choisir…</button>
-    <div class="reglage"><span>RetroArch</span><code id="retroarch">non choisi</code></div>
-    <button class="action" id="choisirRetroarch">Choisir…</button>
-    <button class="action" id="scanner" style="margin-left:auto">Rescanner</button>
+    <input id="recherche" placeholder="Rechercher un jeu sur toutes les consoles…" />
+    <select id="hasardJoueurs" title="Jeu au hasard">
+      <option value="1">Au hasard : tous</option><option value="2">2 joueurs et +</option><option value="4">4 joueurs</option>
+    </select>
+    <button class="b" id="hasard">🎲 Au hasard</button>
+    <button class="b" id="scanner">Rescanner</button>
   </header>
   <div id="message"></div>
-  <div id="liste"></div>
+  <div id="vue"></div>
 </main>
 <script>
-  const invoke = window.__TAURI__.core.invoke;
-  const CONSOLES = [
-    ["nes", "NES"], ["snes", "Super Nintendo"], ["n64", "Nintendo 64"],
-    ["ps1", "PlayStation"], ["gamecube", "GameCube"], ["wii", "Wii"],
-  ];
-  const REGIONS = { france: "FR", europe: "EU", usa: "US", japon: "JP", monde: "Monde", autre: "?" };
-  let fiches = [];
-  let consoleActive = "nes";
+const { invoke } = window.__TAURI__.core;
+const { listen } = window.__TAURI__.event;
+const REGIONS = { france:"FR", europe:"EU", usa:"US", japon:"JP", monde:"Monde", autre:"?" };
+const NOMS_PAD = { sud:"Bas (A / Croix)", est:"Droite (B / Rond)", ouest:"Gauche (X / Carré)", nord:"Haut (Y / Triangle)", l1:"L1 / LB", r1:"R1 / RB", l2:"L2 / LT", r2:"R2 / RT", l3:"Stick gauche (clic)", r3:"Stick droit (clic)", start:"Start", select:"Select / Back", haut:"Croix haut", bas:"Croix bas", gauche:"Croix gauche", droite:"Croix droite" };
+let etat = null, fiches = [], vue = "accueil", consoleActive = null, room = null, assistantEnCours = null;
 
-  const el = (id) => document.getElementById(id);
-  function dire(texte, genre = "") {
-    el("message").textContent = texte;
-    el("message").className = genre;
+// Petite mémoire locale (adresse de l'hôte) : peut être indisponible, jamais bloquante.
+const memo = { lire: (k) => { try { return localStorage.getItem(k); } catch { return null; } }, ecrire: (k, v) => { try { localStorage.setItem(k, v); } catch {} } };
+const $ = (s, r = document) => r.querySelector(s);
+const el = (tag, attrs = {}, ...enfants) => {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k.startsWith("on")) e.addEventListener(k.slice(2), v);
+    else if (k === "class") e.className = v;
+    else if (v !== false && v != null) e.setAttribute(k, v === true ? "" : v);
   }
+  for (const c of enfants.flat()) if (c != null) e.append(c instanceof Node ? c : document.createTextNode(String(c)));
+  return e;
+};
+function dire(t, genre = "") { $("#message").textContent = t; $("#message").className = genre; }
+async function essayer(f, ok) { try { const r = await f(); if (ok) dire(typeof ok === "function" ? ok(r) : ok, "ok"); return r; } catch (e) { dire(String(e), "erreur"); throw e; } }
+const duree = (s) => s < 60 ? "" : s < 3600 ? `${Math.round(s / 60)} min jouées` : `${(s / 3600).toFixed(1)} h jouées`;
 
-  function afficherConsoles() {
-    el("consoles").replaceChildren(...CONSOLES.map(([id, nom]) => {
-      const b = document.createElement("button");
-      b.className = "console" + (id === consoleActive ? " active" : "");
-      const n = fiches.filter((f) => f.console === id).length;
-      b.innerHTML = `<span></span><small>${n}</small>`;
-      b.firstChild.textContent = nom;
-      b.onclick = () => { consoleActive = id; afficherConsoles(); afficherJeux(); };
-      return b;
-    }));
+// ---------- Navigation ----------
+function aller(v, c = null) { vue = v; consoleActive = c; dessinerNav(); dessiner(); }
+document.querySelectorAll(".nav[data-vue]").forEach((b) => b.onclick = () => aller(b.dataset.vue));
+function dessinerNav() {
+  document.querySelectorAll(".nav[data-vue]").forEach((b) => b.classList.toggle("active", b.dataset.vue === vue && !consoleActive));
+  const zone = $("#consoles"); zone.replaceChildren();
+  for (const c of etat?.consoles || []) {
+    const n = fiches.filter((f) => f.console === c.console).length;
+    zone.append(el("button", { class: "nav" + (consoleActive === c.console ? " active" : ""), onclick: () => aller("console", c.console) },
+      el("span", { class: "pastille" + (c.manques.length ? " non" : ""), title: c.manques.join("\n") || "Prête" }),
+      el("span", { style: "flex:1" }, c.nom), el("small", {}, n)));
   }
+}
 
-  function afficherJeux() {
-    const jeux = fiches.filter((f) => f.console === consoleActive);
-    if (!jeux.length) {
-      el("liste").innerHTML = `<div class="vide">Aucun jeu ici. Range tes propres copies dans le sous-dossier « ${consoleActive} » du dossier des jeux, puis rescanne.</div>`;
-      return;
-    }
-    el("liste").replaceChildren(...jeux.map((fiche) => {
-      const ligne = document.createElement("div");
-      ligne.className = "jeu";
-      const titre = document.createElement("div");
-      titre.className = "titre";
-      titre.textContent = fiche.titre;
-      const detail = document.createElement("small");
-      const v0 = fiche.variantes[0];
-      detail.textContent = (v0.reconnu ? "Reconnu par la base · " : "Reconnu par son nom · ") +
-        fiche.variantes.length + (fiche.variantes.length > 1 ? " versions" : " version");
-      titre.append(detail);
+// ---------- Vues ----------
+async function dessiner() {
+  const v = $("#vue"); v.replaceChildren();
+  if (vue === "accueil") return accueil(v);
+  if (vue === "console") return listeJeux(v, fiches.filter((f) => f.console === consoleActive), true);
+  if (vue === "recherche") return listeJeux(v, resultats, false);
+  if (vue === "installation") return installation(v);
+  if (vue === "reglages") return reglages(v);
+  if (vue === "assistant") return assistant(v);
+  if (vue === "room") return vueRoom(v);
+}
 
-      const choix = document.createElement("select");
-      fiche.variantes.forEach((v) => {
-        const o = document.createElement("option");
-        o.value = v.chemin;
-        o.textContent = `${REGIONS[v.region] || "?"} · ${v.nom}`;
-        choix.append(o);
-      });
+let resultats = [];
+$("#recherche").addEventListener("input", async (e) => {
+  const t = e.target.value.trim();
+  if (!t) return aller("accueil");
+  resultats = await invoke("retro_rechercher", { texte: t });
+  vue = "recherche"; consoleActive = null; dessinerNav(); dessiner();
+});
+$("#hasard").onclick = async () => {
+  const f = await invoke("retro_hasard", { joueurs: Number($("#hasardJoueurs").value), console: consoleActive });
+  if (!f) return dire("Aucun jeu ne correspond.", "erreur");
+  resultats = [f]; vue = "recherche"; dessiner(); dire(`Et pourquoi pas… ${f.titre} ?`, "ok");
+};
+$("#scanner").onclick = () => scanner();
 
-      const jouer = document.createElement("button");
-      jouer.className = "jouer";
-      jouer.textContent = "Jouer";
-      jouer.onclick = async () => {
-        dire(`Lancement de ${fiche.titre}…`);
-        try {
-          await invoke("retro_lancer", { chemin: choix.value });
-          dire(`${fiche.titre} est lancé. Échap pour quitter le jeu.`, "ok");
-        } catch (e) { dire(String(e), "erreur"); }
-      };
-      ligne.append(titre, choix, jouer);
-      return ligne;
-    }));
+async function accueil(v) {
+  const pas_pretes = etat.consoles.filter((c) => c.manques.length && c.installable);
+  if (!etat.reglages.dossier_jeux || pas_pretes.length) {
+    v.append(el("div", { class: "carte", style: "margin-bottom:14px" },
+      el("b", {}, "Pour commencer"),
+      !etat.reglages.dossier_jeux ? el("div", { class: "ligne" }, "1. Choisis le dossier de tes jeux (avec nes, snes, n64, ps1, gamecube, wii).", el("button", { class: "b", onclick: choisirDossier }, "Choisir…")) : null,
+      pas_pretes.length ? el("div", { class: "ligne" }, `${etat.reglages.dossier_jeux ? 1 : 2}. Installe les émulateurs (automatique, quelques minutes).`, el("button", { class: "p", onclick: () => aller("installation") }, "Installer")) : null));
   }
+  v.append(el("h2", {}, "Reprendre"));
+  const reprendre = await invoke("retro_reprendre");
+  if (!reprendre.length) v.append(el("div", { class: "vide" }, "Les jeux que tu lances apparaîtront ici."));
+  else v.append(el("div", { class: "cartes" }, reprendre.map((p) => el("div", { class: "carte" },
+    el("b", {}, p.titre), el("small", {}, etat.consoles.find((c) => c.console === p.console)?.nom || ""),
+    el("div", { class: "ligne" }, el("button", { class: "p", onclick: () => lancer(p.chemin, p.titre) }, "Reprendre"))))));
+  v.append(el("h3", {}, "Consoles"));
+  v.append(el("div", { class: "cartes" }, etat.consoles.map((c) => el("div", { class: "carte" },
+    el("b", {}, c.nom), el("small", {}, `${fiches.filter((f) => f.console === c.console).length} jeux · ${c.manques.length ? "pas encore prête" : c.configuree ? "prête et configurée" : "prête"}`),
+    el("div", { class: "ligne" },
+      el("button", { class: "b", onclick: () => aller("console", c.console) }, "Voir les jeux"),
+      el("button", { class: "b", onclick: () => ouvrirAssistant(c.console) }, c.configuree ? "Reconfigurer" : "Configurer"))))));
+}
 
-  async function scanner() {
-    dire("Scan en cours…");
+function listeJeux(v, liste, avecEnTete) {
+  const c = etat.consoles.find((x) => x.console === consoleActive);
+  if (avecEnTete && c) {
+    v.append(el("div", { class: "ligne" }, el("h2", { style: "margin:0;flex:1" }, c.nom),
+      el("button", { class: "b", onclick: () => ouvrirAssistant(c.console) }, c.configuree ? "Reconfigurer la manette" : "Configurer (première fois)")));
+    for (const m of c.manques) v.append(el("div", { class: "carte", style: "margin:8px 0;color:var(--attention)" }, m,
+      c.installable ? el("button", { class: "b", style: "margin-left:10px", onclick: () => aller("installation") }, "Installer") : el("button", { class: "b", style: "margin-left:10px", onclick: () => invoke("retro_ouvrir_bios") }, "Ouvrir le dossier BIOS")));
+  }
+  if (!liste.length) return v.append(el("div", { class: "vide" }, avecEnTete ? `Aucun jeu ici. Range tes propres copies dans le sous-dossier « ${consoleActive} » de ton dossier de jeux, puis rescanne.` : "Aucun résultat."));
+  v.append(el("div", { class: "grille" }, liste.map(ligneJeu)));
+}
+
+function ligneJeu(f) {
+  const choix = el("select", {}, f.variantes.map((x) => el("option", { value: x.chemin }, `${x.mod_installe ? "MOD · " : ""}${REGIONS[x.region] || "?"} · ${x.nom}`)));
+  const statut = { parfait: "ok", bugs_connus: "att", injouable: "err" }[f.statut] || "";
+  const zoneMods = el("div", { style: "width:100%;display:none" });
+  return el("div", { class: "jeu" },
+    el("div", { class: "titre" }, f.titre,
+      el("small", {}, el("span", { class: "badge " + statut, title: f.notes }, f.statut_texte),
+        f.joueurs > 1 ? el("span", { class: "badge" }, `${f.joueurs} joueurs`) : null,
+        f.netplay ? el("span", { class: "badge ok" }, "Netplay testé") : null,
+        f.variantes[0].reconnu ? el("span", { class: "badge" }, "Copie vérifiée") : null,
+        duree(f.temps) ? el("span", { class: "badge" }, duree(f.temps)) : null)),
+    choix,
+    el("button", { class: "b", title: "Mods et variantes", onclick: async () => {
+      zoneMods.style.display = zoneMods.style.display === "none" ? "block" : "none";
+      const mods = await invoke("retro_mods", { chemin: choix.value }).catch(() => []);
+      zoneMods.replaceChildren(mods.length ? el("div", { class: "grille" }, mods.map((m) => el("div", { class: "ligne" },
+        el("span", { style: "flex:1" }, `${m.nom} v${m.version}${m.auteur ? " — " + m.auteur : ""}`), el("small", { style: "color:var(--gris)" }, m.notes),
+        el("button", { class: "b", onclick: () => essayer(async () => { await invoke("retro_installer_mod", { id: m.id, chemin: choix.value }); await scanner(); }, `${m.nom} installé : la variante apparaît dans la liste des versions.`) }, "Installer")))) : el("small", { style: "color:var(--gris)" }, "Aucun mod connu pour cette version."));
+    } }, "Mods"),
+    el("button", { class: "b", onclick: () => { roomJeu = choix.value; aller("room"); } }, "En ligne"),
+    el("button", { class: "p", onclick: () => lancer(choix.value, f.titre) }, "Jouer"),
+    zoneMods);
+}
+
+async function lancer(chemin, titre) {
+  dire(`Lancement de ${titre}…`);
+  await essayer(() => invoke("retro_lancer", { chemin }), `${titre} est lancé. Échap ou L1+R1+Start+Select pour revenir. Menu rapide : L3+R3.`).catch(() => {});
+}
+
+// ---------- Installation ----------
+let progres = null;
+async function installation(v) {
+  v.append(el("h2", {}, "Émulateurs"));
+  v.append(el("p", { style: "color:var(--gris)" }, "SQUAD installe et met à jour RetroArch, ses moteurs et Dolphin tout seul, uniquement dans les versions validées : tout le monde a la même version, le netplay reste compatible."));
+  const barre = el("div", { class: "barre" }, el("div"));
+  const texte = el("div", { style: "color:var(--gris)" });
+  const bouton = el("button", { class: "p", onclick: async () => {
+    bouton.disabled = true;
+    progres = (p) => { barre.firstChild.style.width = `${p.total ? (100 * p.fait / p.total) : 100}%`; texte.textContent = p.etape === "Terminé" ? "Terminé." : `${p.etape} : ${p.composant} (${p.fait + 1}/${p.total})`; };
+    try { const faits = await invoke("retro_installer"); dire(faits.length ? `Installé ou mis à jour : ${faits.join(", ")}.` : "Tout est déjà à jour.", "ok"); }
+    catch (e) { dire(String(e), "erreur"); }
+    bouton.disabled = false; await rafraichir();
+  } }, "Installer / mettre à jour");
+  v.append(el("div", { class: "ligne" }, bouton), barre, texte);
+  v.append(el("h3", {}, "Installé sur ce PC"));
+  const integrite = await invoke("retro_integrite");
+  const lignes = Object.entries(etat.versions);
+  if (!lignes.length) v.append(el("div", { class: "vide" }, "Rien pour l'instant."));
+  for (const [nom, version] of lignes) {
+    const abimes = integrite[nom] || [];
+    v.append(el("div", { class: "jeu" }, el("div", { class: "titre" }, nom, el("small", {}, `version ${version}`)),
+      el("span", { class: "badge " + (abimes.length ? "err" : "ok") }, abimes.length ? `${abimes.length} fichier(s) abîmé(s) : réinstalle` : "Intact"),
+      el("button", { class: "b", onclick: () => essayer(async () => { const r = await invoke("retro_retour_arriere", { nom }); await rafraichir(); return r; }, (r) => `${nom} est revenu à la version ${r}.`) }, "Revenir à la version précédente")));
+  }
+}
+
+// ---------- Assistant de première configuration ----------
+async function ouvrirAssistant(console) {
+  const a = await invoke("retro_assistant", { console });
+  assistantEnCours = { console, ...a, i: 0, attend: null };
+  aller("assistant");
+}
+function assistant(v) {
+  const a = assistantEnCours, c = etat.consoles.find((x) => x.console === a.console), etape = a.etapes[a.i];
+  v.append(el("h2", {}, `${c.nom} — configuration (${a.i + 1}/${a.etapes.length})`));
+  const suivant = el("button", { class: "p", onclick: () => { a.i++; if (a.i >= a.etapes.length) return terminerAssistant(); dessiner(); } }, a.i === a.etapes.length - 1 ? "Terminer" : "Suivant");
+  const precedent = el("button", { class: "b", disabled: a.i === 0, onclick: () => { a.i--; dessiner(); } }, "Précédent");
+  if (etape.type === "manette") {
+    v.append(el("p", {}, etat.manettes.length ? `Manette détectée : ${etat.manettes.join(", ")}. SQUAD propose une disposition pour la ${c.nom} ; tu pourras la tester à l'étape suivante.` : "Aucune manette détectée : branche ta manette (Xbox, PlayStation, Switch Pro…). Le clavier marche aussi, mais la manette, c'est mieux."));
+  } else if (etape.type === "test") {
+    v.append(el("p", {}, "Appuie sur chaque bouton de ta manette : la touche de la console qu'il commande s'allume. Pour changer, clique sur une touche puis appuie sur le bouton voulu."));
+    const pad = el("div", { class: "pad" }, etape.boutons.map((b) => el("div", { class: "touche" + (a.attend === b.id ? " attend" : ""), "data-id": b.id, onclick: () => { a.attend = b.id; dire(`Appuie sur le bouton de ta manette pour « ${b.nom} »…`); dessiner(); } },
+      b.nom, el("small", {}, NOMS_PAD[a.mapping[b.id]] || a.mapping[b.id]))));
+    v.append(pad);
+    const conflits = Object.values(a.mapping).filter((x, i, t) => t.indexOf(x) !== i);
+    if (conflits.length) v.append(el("div", { style: "color:var(--attention)" }, `Attention : ${conflits.map((x) => NOMS_PAD[x]).join(", ")} sert deux fois.`));
+    v.append(el("div", { class: "ligne" }, el("button", { class: "b", onclick: () => { for (const b of etape.boutons) a.mapping[b.id] = b.par_defaut; dessiner(); } }, "Remettre par défaut")));
+  } else if (etape.type === "wiimote") {
+    v.append(el("p", {}, "Avec quoi joues-tu à la Wii ?"));
+    for (const [val, txt] of [["simulee", "Ma manette (Classic Controller simulé) — parfait pour la plupart des jeux"], ["vraie", "Une vraie Wiimote (Bluetooth ou Mayflash DolphinBar)"]])
+      v.append(el("div", { class: "ligne" }, el("button", { class: a.profil.wiimote === val ? "p" : "b", onclick: () => { a.profil.wiimote = val; dessiner(); } }, txt)));
+  } else if (etape.type === "bios") {
+    const manque = c.manques.some((m) => m.includes("BIOS"));
+    v.append(el("p", {}, manque ? "La PlayStation a besoin du BIOS de ta console (scph5502.bin pour une console européenne, scph5501.bin pour une américaine). Copie-le dans le dossier BIOS, puis vérifie." : "BIOS trouvé et valide ✔"));
+    v.append(el("div", { class: "ligne" }, el("button", { class: "b", onclick: () => invoke("retro_ouvrir_bios") }, "Ouvrir le dossier BIOS"), el("button", { class: "b", onclick: async () => { await rafraichir(); dessiner(); } }, "Vérifier")));
+  } else if (etape.type === "image") {
+    v.append(el("p", {}, "Quel rendu préfères-tu ?"));
+    for (const [val, txt] of [["pixel_net", "Pixel net — les pixels bien carrés"], ["cathodique", "Écran cathodique — comme sur la télé de l'époque"], ["lisse", "Lissé — image adoucie"]])
+      v.append(el("div", { class: "ligne" }, el("button", { class: a.profil.image === val ? "p" : "b", onclick: () => { a.profil.image = val; dessiner(); } }, txt)));
+    v.append(el("div", { class: "ligne" }, el("label", {}, "Rembobinage"), el("input", { type: "checkbox", checked: a.profil.rembobinage, onchange: (e) => a.profil.rembobinage = e.target.checked })));
+    if (["gamecube", "wii"].includes(a.console)) v.append(el("div", { class: "ligne" }, el("label", {}, "Écran large 16:9"), el("input", { type: "checkbox", checked: a.profil.ecran_large, onchange: (e) => a.profil.ecran_large = e.target.checked })));
+  } else if (etape.type === "partie_test") {
+    v.append(el("p", {}, "On enregistre tes choix et on lance ton premier jeu de la console pendant 30 secondes pour vérifier."));
+    v.append(el("div", { class: "ligne" }, el("button", { class: "b", onclick: async () => { await enregistrerProfil(false); essayer(() => invoke("retro_partie_test", { console: a.console }), (t) => `${t} tourne 30 secondes…`).catch(() => {}); } }, "Lancer la partie test"),
+      el("button", { class: "b", onclick: () => invoke("retro_arreter_partie_test") }, "Arrêter")));
+  }
+  v.append(el("div", { class: "ligne", style: "margin-top:20px" }, precedent, suivant, el("button", { class: "b", onclick: () => aller("console", a.console) }, "Annuler")));
+}
+async function enregistrerProfil(fini) {
+  const a = assistantEnCours;
+  await invoke("retro_enregistrer_profil", { profil: { ...a.profil, mapping: a.mapping, configure: fini || a.profil.configure } });
+}
+async function terminerAssistant() {
+  try { await enregistrerProfil(true); dire("Configuration enregistrée.", "ok"); await rafraichir(); aller("console", assistantEnCours.console); }
+  catch (e) { assistantEnCours.i--; dire(String(e), "erreur"); dessiner(); }
+}
+
+// ---------- Room et netplay ----------
+let roomJeu = null, lienRoom = null, compte = null;
+function vueRoom(v) {
+  v.append(el("h2", {}, "Jouer en ligne"));
+  if (room) return dessinerRoom(v);
+  const jeux = fiches.flatMap((f) => f.variantes.map((x) => ({ f, x })));
+  const choixJeu = () => el("select", { style: "min-width:320px", onchange: (e) => roomJeu = e.target.value },
+    jeux.map(({ f, x }) => el("option", { value: x.chemin, selected: x.chemin === roomJeu }, `${f.console_nom} · ${f.titre} (${REGIONS[x.region]})${f.netplay ? " ✔" : ""}`)));
+  if (!roomJeu && jeux.length) roomJeu = jeux[0].x.chemin;
+  const adresse = el("input", { placeholder: "Ton adresse (IP publique ou Tailscale)", value: memo.lire("adresse") || "" });
+  const mdp = el("input", { placeholder: "Mot de passe (facultatif)" });
+  const max = el("select", {}, [2, 3, 4, 8].map((n) => el("option", { value: n, selected: n === 4 }, `${n} joueurs max`)));
+  v.append(el("div", { class: "carte" }, el("b", {}, "Héberger une partie"),
+    el("div", { class: "ligne" }, el("label", {}, "Jeu"), choixJeu()),
+    el("div", { class: "ligne" }, el("label", {}, "Adresse"), adresse),
+    el("div", { class: "ligne" }, el("label", {}, "Room"), max, mdp),
+    el("small", {}, "Tes potes doivent pouvoir te joindre : même réseau, Tailscale, ou ports 55435-55436 ouverts sur ta box."),
+    el("div", { class: "ligne" }, el("button", { class: "p", onclick: () => essayer(async () => {
+      memo.ecrire("adresse", adresse.value.trim());
+      lienRoom = await invoke("retro_heberger", { chemin: roomJeu, max: Number(max.value), motDePasse: mdp.value, adresse: adresse.value.trim() || "127.0.0.1" });
+      await navigator.clipboard.writeText(lienRoom).catch(() => {});
+    }, "Room ouverte : le lien d'invitation est copié, colle-le sur Discord.").catch(() => {}) }, "Ouvrir la room"))));
+  const lien = el("input", { placeholder: "Colle le lien squadretro://…", style: "flex:1" });
+  const mdp2 = el("input", { placeholder: "Mot de passe (si demandé)" });
+  const info = el("small", { style: "color:var(--gris)" });
+  lien.addEventListener("change", async () => {
     try {
-      fiches = await invoke("retro_bibliotheque");
-      dire(`${fiches.length} jeu${fiches.length > 1 ? "x" : ""} trouvé${fiches.length > 1 ? "s" : ""}.`, "ok");
-    } catch (e) { fiches = []; dire(String(e), "erreur"); }
-    afficherConsoles();
-    afficherJeux();
+      const inv = await invoke("retro_lire_invitation", { lien: lien.value });
+      const candidat = jeux.find(({ f }) => f.console === inv.console && f.titre.toLowerCase() === inv.titre.toLowerCase());
+      if (candidat) roomJeu = candidat.x.chemin;
+      info.textContent = `${inv.titre} (${inv.console})${inv.privee ? " · mot de passe demandé" : ""}${candidat ? "" : " — tu n'as pas ce jeu dans ta bibliothèque"}`;
+      const [ms, q] = await invoke("retro_ping", { adresse: inv.adresse, port: inv.port }).catch(() => [null, "L'hôte ne répond pas"]);
+      info.textContent += ms != null ? ` · ping ${ms} ms : ${q}` : ` · ${q}`;
+    } catch (e) { info.textContent = String(e); }
+  });
+  v.append(el("div", { class: "carte", style: "margin-top:12px" }, el("b", {}, "Rejoindre une partie"),
+    el("div", { class: "ligne" }, lien), info,
+    el("div", { class: "ligne" }, el("label", {}, "Ma version du jeu"), choixJeu()),
+    el("div", { class: "ligne" }, mdp2, el("button", { class: "p", onclick: () => essayer(() => invoke("retro_rejoindre", { lien: lien.value, chemin: roomJeu, motDePasse: mdp2.value }), "Connexion à la room…").catch(() => {}) }, "Rejoindre"))));
+}
+function dessinerRoom(v) {
+  const hote = room.hote === (etat.reglages.pseudo || "Joueur");
+  v.append(el("div", { class: "carte" }, el("b", {}, `${room.titre} — room de ${room.hote}`),
+    el("small", {}, `${room.places.length}/${room.max} joueurs${room.privee ? " · privée" : ""}`),
+    lienRoom && hote ? el("div", { class: "ligne" }, el("code", {}, lienRoom), el("button", { class: "b", onclick: () => navigator.clipboard.writeText(lienRoom) }, "Copier le lien")) : null,
+    el("div", { class: "places" }, room.places.map((p) => el("div", { class: "place" }, p.pseudo + (p.pseudo === room.hote ? " (hôte)" : ""), el("span", { class: "badge " + (p.pret ? "ok" : "") }, p.pret ? "Prêt" : "Pas prêt")))),
+    compte != null ? el("div", { class: "compte" }, compte) : null,
+    room.etat.etat === "en_jeu" ? el("div", { class: "compte" }, "C'est parti !") : null,
+    el("div", { class: "ligne" },
+      el("button", { class: "b", onclick: () => essayer(() => invoke("retro_pret")).catch(() => {}) }, "Prêt / pas prêt"),
+      hote ? el("button", { class: "p", disabled: !(room.places.length >= 2 && room.places.every((p) => p.pret)), onclick: () => essayer(() => invoke("retro_lancer_room")).catch(() => {}) }, "Lancer la partie") : null,
+      el("button", { class: "b", onclick: async () => { await invoke("retro_quitter_room"); room = null; lienRoom = null; compte = null; dessiner(); } }, "Quitter la room"))));
+}
+listen("retro-room", ({ payload }) => {
+  room = payload.room;
+  if (payload.dans_ms != null) {
+    const fin = Date.now() + payload.dans_ms;
+    clearInterval(window._compte);
+    window._compte = setInterval(() => { const s = Math.ceil((fin - Date.now()) / 1000); compte = s > 0 ? s : null; if (s <= 0) clearInterval(window._compte); if (vue === "room") dessiner(); }, 250);
+  } else { compte = null; }
+  if (vue === "room") dessiner();
+});
+listen("retro-room-refus", ({ payload }) => { dire(payload, "erreur"); room = null; if (vue === "room") dessiner(); });
+
+// ---------- Réglages ----------
+async function reglages(v) {
+  const r = etat.reglages;
+  v.append(el("h2", {}, "Réglages"));
+  const pseudo = el("input", { value: r.pseudo || "", placeholder: "Ton pseudo en ligne", onchange: (e) => invoke("retro_choisir_pseudo", { pseudo: e.target.value }).then(rafraichir) });
+  v.append(el("div", { class: "ligne" }, el("label", {}, "Dossier des jeux"), el("code", {}, r.dossier_jeux || "non choisi"), el("button", { class: "b", onclick: choisirDossier }, "Choisir…")));
+  v.append(el("div", { class: "ligne" }, el("label", {}, "Pseudo"), pseudo));
+  v.append(el("div", { class: "ligne" }, el("label", {}, "Mises à jour"), el("select", { onchange: (e) => invoke("retro_choisir_canal", { canal: e.target.value }).then(rafraichir) },
+    el("option", { value: "stable", selected: r.canal === "stable" }, "Stable (recommandé)"), el("option", { value: "beta", selected: r.canal === "beta" }, "Bêta (pour tester avant la bande)"))));
+  v.append(el("div", { class: "ligne" }, el("label", {}, "RetroArch"), el("code", {}, r.retroarch || "celui installé par SQUAD"),
+    el("button", { class: "b", onclick: () => invoke("retro_choisir_retroarch", {}).then(rafraichir) }, "Utiliser le mien…"),
+    r.retroarch ? el("button", { class: "b", onclick: () => invoke("retro_choisir_retroarch", { oublier: true }).then(rafraichir) }, "Revenir à celui de SQUAD") : null));
+  v.append(el("div", { class: "ligne" }, el("label", {}, "BIOS"), el("code", {}, etat.dossier_bios), el("button", { class: "b", onclick: () => invoke("retro_ouvrir_bios") }, "Ouvrir")));
+
+  v.append(el("h3", {}, "Sauvegarde"));
+  v.append(el("div", { class: "ligne" },
+    el("button", { class: "b", onclick: () => essayer(() => invoke("retro_exporter"), (c) => c ? `Sauvegarde écrite : ${c}` : "Annulé.") }, "Exporter tout (changer de PC)"),
+    el("button", { class: "b", onclick: () => essayer(async () => { const n = await invoke("retro_restaurer"); await rafraichir(); return n; }, (n) => n == null ? "Annulé." : `${n} fichiers restaurés.`) }, "Restaurer…")));
+
+  v.append(el("h3", {}, "Bibliothèque"));
+  const doublons = await invoke("retro_doublons");
+  v.append(el("div", {}, doublons.length ? `${doublons.length} fichier(s) en double (même contenu) :` : "Aucun doublon."));
+  for (const g of doublons) v.append(el("pre", {}, g.join("\n")));
+  const gros = fiches.flatMap((f) => f.variantes.filter((x) => /\.(iso|gcm|wbfs|cue)$/i.test(x.chemin)).map((x) => ({ f, x })));
+  if (gros.length) {
+    v.append(el("div", { style: "margin-top:10px" }, "Images disque compressables sans perte (RVZ, CHD) :"));
+    for (const { f, x } of gros) v.append(el("div", { class: "ligne" }, el("span", { style: "flex:1" }, x.nom), el("button", { class: "b", onclick: (e) => { e.target.disabled = true; dire(`Compression de ${f.titre}…`); essayer(async () => { const s = await invoke("retro_convertir", { chemin: x.chemin }); await scanner(); return s; }, (s) => `Compressé : ${s}. L'original est toujours là, tu peux le supprimer.`).catch(() => {}); } }, "Compresser")));
   }
 
-  async function chargerReglages() {
-    const r = await invoke("retro_reglages");
-    el("dossier").textContent = r.dossier_jeux || "non choisi";
-    el("dossier").title = r.dossier_jeux || "";
-    el("retroarch").textContent = r.retroarch || "non choisi";
-    el("retroarch").title = r.retroarch || "";
-    return r;
+  v.append(el("h3", {}, "Diagnostic"));
+  const rapport = el("pre", {}, await invoke("retro_diagnostic"));
+  v.append(el("div", { class: "ligne" }, el("button", { class: "b", onclick: () => navigator.clipboard.writeText(rapport.textContent).then(() => dire("Rapport copié : colle-le sur Discord.", "ok")) }, "Copier le rapport")), rapport);
+}
+async function choisirDossier() { if (await invoke("retro_choisir_dossier")) { await rafraichir(); await scanner(); } }
+
+// ---------- Manette : assistant et navigation (mode canapé) ----------
+listen("retro-manettes", () => rafraichir());
+listen("retro-manette", ({ payload }) => {
+  const { bouton, appuye } = payload;
+  if (vue === "assistant" && assistantEnCours?.etapes[assistantEnCours.i]?.type === "test") {
+    const a = assistantEnCours;
+    if (appuye && a.attend) { a.mapping[a.attend] = bouton; a.attend = null; dire(""); dessiner(); return; }
+    for (const [id, phys] of Object.entries(a.mapping)) if (phys === bouton) document.querySelector(`.touche[data-id="${id}"]`)?.classList.toggle("allumee", appuye);
+    return;
   }
+  if (!appuye || !document.hasFocus()) return;
+  const focusables = [...document.querySelectorAll("button:not(:disabled), select, input")].filter((e) => e.offsetParent);
+  let i = focusables.indexOf(document.activeElement);
+  if (["bas", "droite"].includes(bouton)) focusables[Math.min(i + 1, focusables.length - 1)]?.focus();
+  else if (["haut", "gauche"].includes(bouton)) focusables[Math.max(i - 1, 0)]?.focus();
+  else if (bouton === "sud") document.activeElement?.click();
+  else if (bouton === "est") aller("accueil");
+});
+listen("retro-installation", ({ payload }) => progres?.(payload));
+listen("retro-partie", ({ payload }) => { if (!payload.en_cours) { dire(`Partie de ${payload.titre} terminée.`); if (vue === "accueil") dessiner(); } });
 
-  el("choisirDossier").onclick = async () => {
-    if (await invoke("retro_choisir_dossier")) { await chargerReglages(); await scanner(); }
-  };
-  el("choisirRetroarch").onclick = async () => {
-    if (await invoke("retro_choisir_retroarch")) await chargerReglages();
-  };
-  el("scanner").onclick = scanner;
-
-  (async () => {
-    afficherConsoles();
-    const r = await chargerReglages();
-    if (r.dossier_jeux) await scanner();
-    else dire("Commence par choisir le dossier de tes jeux et retroarch.exe.");
-  })();
+// ---------- Démarrage ----------
+async function rafraichir() { etat = await invoke("retro_etat"); dessinerNav(); }
+async function scanner() {
+  if (!etat.reglages.dossier_jeux) return;
+  dire("Scan en cours…");
+  try { fiches = await invoke("retro_bibliotheque"); dire(`${fiches.length} jeu${fiches.length > 1 ? "x" : ""} trouvé${fiches.length > 1 ? "s" : ""}.`, "ok"); }
+  catch (e) { fiches = []; dire(String(e), "erreur"); }
+  dessinerNav(); dessiner();
+}
+(async () => { await rafraichir(); await scanner(); dessiner(); })();
 </script>
 </body>
 </html>
