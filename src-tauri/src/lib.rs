@@ -17,6 +17,9 @@
 //!   le dossier d'un jeu (mods.rs) ;
 //! - une icône dans la barre des tâches, le lancement avec Windows, et les
 //!   liens externes renvoyés vers le navigateur (liens.rs) ;
+//! - SQUAD//RETRO (retro.rs) : les jeux rétro de la personne (émulateurs
+//!   installés et mis à jour tout seuls, assistant manette, room netplay),
+//!   dans sa fenêtre ouverte depuis l'icône ;
 //! - les mises à jour, téléchargées et installées toutes seules depuis les
 //!   versions publiées sur GitHub.
 //!
@@ -30,6 +33,7 @@ mod lol;
 mod mods;
 mod parties;
 mod reglages;
+mod retro;
 mod serveurs;
 mod steam;
 
@@ -274,6 +278,348 @@ async fn mod_desinstaller(app: AppHandle, id: String) -> Result<(), String> {
 #[tauri::command]
 fn mods_installes(mods: tauri::State<'_, mods::Mods>) -> Vec<mods::Visible> {
     mods.visibles()
+}
+
+// ----- SQUAD//RETRO (retro.rs) -----
+
+type EtatRetro<'a> = tauri::State<'a, std::sync::Arc<retro::Retro>>;
+
+/// Tout l'état de SQUAD//RETRO : réglages, consoles prêtes ou non, versions.
+#[tauri::command]
+fn retro_etat(retro: EtatRetro<'_>) -> retro::EtatVisible {
+    retro.etat()
+}
+
+/// Ouvre la fenêtre de Windows pour choisir le dossier des jeux rétro.
+#[tauri::command]
+async fn retro_choisir_dossier(app: AppHandle) -> Option<String> {
+    let dossier = app
+        .dialog()
+        .file()
+        .set_title("Le dossier de tes jeux rétro (avec nes, snes…)")
+        .blocking_pick_folder()?;
+    let chemin = dossier.into_path().ok()?;
+    app.state::<std::sync::Arc<retro::Retro>>().choisir_dossier_jeux(&chemin);
+    Some(chemin.to_string_lossy().into_owned())
+}
+
+/// Utiliser un RetroArch déjà installé (ou revenir à celui de SQUAD : `oublier`).
+#[tauri::command]
+async fn retro_choisir_retroarch(app: AppHandle, oublier: Option<bool>) -> Option<String> {
+    let retro = app.state::<std::sync::Arc<retro::Retro>>().inner().clone();
+    if oublier.unwrap_or(false) {
+        retro.choisir_retroarch(None);
+        return None;
+    }
+    let fichier = app
+        .dialog()
+        .file()
+        .set_title("RetroArch (retroarch.exe)")
+        .add_filter("Programme", &["exe"])
+        .blocking_pick_file()?;
+    let chemin = fichier.into_path().ok()?;
+    retro.choisir_retroarch(Some(&chemin));
+    Some(chemin.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+fn retro_choisir_pseudo(retro: EtatRetro<'_>, pseudo: String) {
+    retro.choisir_pseudo(&pseudo)
+}
+
+#[tauri::command]
+fn retro_enregistrer_compte(retro: EtatRetro<'_>, compte: squad_retro::avatar::Compte) -> Result<squad_retro::avatar::Compte, String> {
+    retro.enregistrer_compte(compte)
+}
+
+#[tauri::command]
+fn retro_supprimer_compte(retro: EtatRetro<'_>, id: String) {
+    retro.supprimer_compte(&id)
+}
+
+#[tauri::command]
+fn retro_choisir_compte(retro: EtatRetro<'_>, id: Option<String>) -> Result<(), String> {
+    retro.choisir_compte(id.as_deref())
+}
+
+#[tauri::command]
+fn retro_choisir_theme(retro: EtatRetro<'_>, theme: Option<String>, clair: bool, muet: bool, entrer_direct: bool) {
+    retro.choisir_theme(theme, clair, muet, entrer_direct)
+}
+
+#[tauri::command]
+fn retro_enregistrer_fiche(retro: EtatRetro<'_>, console: squad_retro::Console, titre: String, fiche: retro::MaFiche) -> Result<retro::MaFiche, String> {
+    retro.enregistrer_fiche(console, &titre, fiche)
+}
+
+#[tauri::command]
+fn retro_options_mod(retro: EtatRetro<'_>, chemin: String) -> Option<(String, String, Vec<squad_retro::triches::OptionMod>)> {
+    retro.options_mod(&chemin)
+}
+
+#[tauri::command]
+async fn retro_avant_lancement(app: AppHandle, chemin: String) -> Result<Option<String>, String> {
+    let retro = app.state::<std::sync::Arc<retro::Retro>>().inner().clone();
+    retro.mettre_a_jour_avant(chemin).await
+}
+
+#[tauri::command]
+fn retro_stats(retro: EtatRetro<'_>) -> retro::Stats {
+    retro.stats()
+}
+
+#[tauri::command]
+fn retro_dire(retro: EtatRetro<'_>, texte: String) -> Result<(), String> {
+    retro.dire(&texte)
+}
+
+#[tauri::command]
+fn retro_choisir_port(retro: EtatRetro<'_>, port: u8) -> Result<(), String> {
+    retro.choisir_port(port)
+}
+
+#[tauri::command]
+fn retro_exclure(retro: EtatRetro<'_>, pseudo: String) -> Result<(), String> {
+    retro.exclure(&pseudo)
+}
+
+#[tauri::command]
+fn retro_reserver(retro: EtatRetro<'_>, pseudo: String) -> Result<(), String> {
+    retro.reserver(&pseudo)
+}
+
+#[tauri::command]
+fn retro_croises(retro: EtatRetro<'_>) -> Vec<squad_retro::avatar::Croise> {
+    retro.croises()
+}
+
+#[tauri::command]
+fn retro_choisir_canal(retro: EtatRetro<'_>, canal: squad_retro::versions::Canal) {
+    retro.choisir_canal(canal)
+}
+
+/// Scanne le dossier des jeux rétro : une fiche par jeu.
+#[tauri::command]
+async fn retro_bibliotheque(app: AppHandle) -> Result<Vec<retro::FicheVisible>, String> {
+    let retro = app.state::<std::sync::Arc<retro::Retro>>().inner().clone();
+    tauri::async_runtime::spawn_blocking(move || retro.scanner())
+        .await
+        .map_err(|_| "Le scan a planté.".to_string())?
+}
+
+#[tauri::command]
+fn retro_rechercher(retro: EtatRetro<'_>, texte: String) -> Vec<retro::FicheVisible> {
+    retro.rechercher(&texte)
+}
+
+#[tauri::command]
+fn retro_hasard(retro: EtatRetro<'_>, joueurs: Option<u8>, console: Option<squad_retro::Console>) -> Option<retro::FicheVisible> {
+    retro.au_hasard(joueurs.unwrap_or(1), console)
+}
+
+#[tauri::command]
+fn retro_reprendre(retro: EtatRetro<'_>) -> Vec<squad_retro::historique::Partie> {
+    retro.reprendre()
+}
+
+#[tauri::command]
+fn retro_doublons(retro: EtatRetro<'_>) -> Vec<Vec<String>> {
+    retro.doublons()
+}
+
+/// Lance une version d'un jeu trouvée par le dernier scan.
+#[tauri::command]
+fn retro_lancer(app: AppHandle, retro: EtatRetro<'_>, chemin: String) -> Result<(), String> {
+    retro.lancer(&chemin, None, Some(app))
+}
+
+/// Installe ou met à jour les émulateurs à la version validée.
+#[tauri::command]
+async fn retro_installer(app: AppHandle) -> Result<Vec<String>, String> {
+    let retro = app.state::<std::sync::Arc<retro::Retro>>().inner().clone();
+    let r = retro.clone().installer_tout(app).await;
+    if let Err(e) = &r {
+        retro.noter_erreur(e);
+    }
+    r
+}
+
+#[tauri::command]
+fn retro_retour_arriere(retro: EtatRetro<'_>, nom: String) -> Result<String, String> {
+    retro.retour_arriere(&nom)
+}
+
+#[tauri::command]
+fn retro_integrite(retro: EtatRetro<'_>) -> std::collections::BTreeMap<String, Vec<String>> {
+    retro.integrite()
+}
+
+/// L'assistant de première configuration d'une console.
+#[tauri::command]
+fn retro_assistant(retro: EtatRetro<'_>, console: squad_retro::Console) -> retro::Assistant {
+    retro::assistant(&retro, console)
+}
+
+#[tauri::command]
+fn retro_enregistrer_profil(retro: EtatRetro<'_>, profil: squad_retro::Profil) -> Result<(), String> {
+    retro.enregistrer_profil(profil)
+}
+
+#[tauri::command]
+fn retro_partie_test(retro: EtatRetro<'_>, console: squad_retro::Console) -> Result<String, String> {
+    retro.partie_test(console)
+}
+
+#[tauri::command]
+fn retro_arreter_partie_test(retro: EtatRetro<'_>) {
+    retro.arreter_partie_test()
+}
+
+#[tauri::command]
+fn retro_mods(retro: EtatRetro<'_>, chemin: String) -> Result<Vec<squad_retro::mods::ModRetro>, String> {
+    retro.mods_pour(&chemin)
+}
+
+#[tauri::command]
+async fn retro_installer_mod(app: AppHandle, id: String, chemin: String) -> Result<String, String> {
+    let retro = app.state::<std::sync::Arc<retro::Retro>>().inner().clone();
+    retro.installer_mod(id, chemin).await
+}
+
+#[tauri::command]
+fn retro_mods_a_jour(retro: EtatRetro<'_>) -> Vec<squad_retro::mods::ModRetro> {
+    retro.mods_a_jour()
+}
+
+#[tauri::command]
+fn retro_mod_retour_arriere(retro: EtatRetro<'_>, id: String) -> Result<String, String> {
+    retro.mod_retour_arriere(&id)
+}
+
+#[tauri::command]
+fn retro_diagnostic(app: AppHandle, retro: EtatRetro<'_>) -> String {
+    retro.diagnostic(&app.package_info().version.to_string())
+}
+
+/// Exporte tout (sauf les émulateurs) dans un fichier choisi.
+#[tauri::command]
+async fn retro_exporter(app: AppHandle) -> Result<Option<String>, String> {
+    let Some(fichier) = app
+        .dialog()
+        .file()
+        .set_title("Enregistrer la sauvegarde SQUAD//RETRO")
+        .set_file_name("squad-retro-sauvegarde.zip")
+        .add_filter("Sauvegarde", &["zip"])
+        .blocking_save_file()
+    else {
+        return Ok(None);
+    };
+    let chemin = fichier.into_path().map_err(|e| e.to_string())?;
+    app.state::<std::sync::Arc<retro::Retro>>().exporter(&chemin)?;
+    Ok(Some(chemin.to_string_lossy().into_owned()))
+}
+
+#[tauri::command]
+async fn retro_restaurer(app: AppHandle) -> Result<Option<usize>, String> {
+    let Some(fichier) = app
+        .dialog()
+        .file()
+        .set_title("Restaurer une sauvegarde SQUAD//RETRO")
+        .add_filter("Sauvegarde", &["zip"])
+        .blocking_pick_file()
+    else {
+        return Ok(None);
+    };
+    let chemin = fichier.into_path().map_err(|e| e.to_string())?;
+    app.state::<std::sync::Arc<retro::Retro>>().restaurer(&chemin).map(Some)
+}
+
+#[tauri::command]
+async fn retro_convertir(app: AppHandle, chemin: String) -> Result<String, String> {
+    let retro = app.state::<std::sync::Arc<retro::Retro>>().inner().clone();
+    tauri::async_runtime::spawn_blocking(move || retro.convertir(&chemin))
+        .await
+        .map_err(|_| "La compression a planté.".to_string())?
+}
+
+/// Ouvre le dossier des BIOS dans l'explorateur.
+#[tauri::command]
+fn retro_ouvrir_bios(retro: EtatRetro<'_>) -> Result<(), String> {
+    let dossier = retro.etat().dossier_bios;
+    let _ = std::fs::create_dir_all(&dossier);
+    tauri_plugin_opener::open_path(&dossier, None::<&str>).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn retro_heberger(
+    app: AppHandle,
+    retro: EtatRetro<'_>,
+    chemin: String,
+    max: Option<usize>,
+    mot_de_passe: Option<String>,
+    adresse: String,
+) -> Result<String, String> {
+    retro.heberger(app, &chemin, max.unwrap_or(4), mot_de_passe.filter(|m| !m.is_empty()), adresse)
+}
+
+#[tauri::command]
+fn retro_rejoindre(app: AppHandle, retro: EtatRetro<'_>, lien: String, chemin: String, mot_de_passe: Option<String>) -> Result<(), String> {
+    retro.rejoindre(app, &lien, &chemin, mot_de_passe.filter(|m| !m.is_empty()))
+}
+
+/// Lit un lien d'invitation (pour savoir quel jeu choisir avant de rejoindre).
+#[tauri::command]
+fn retro_lire_invitation(lien: String) -> Result<squad_retro::netplay::Invitation, String> {
+    squad_retro::netplay::Invitation::lire(lien.trim())
+}
+
+#[tauri::command]
+fn retro_pret(retro: EtatRetro<'_>) -> Result<(), String> {
+    retro.pret()
+}
+
+#[tauri::command]
+fn retro_lancer_room(retro: EtatRetro<'_>) -> Result<u64, String> {
+    retro.lancer_room()
+}
+
+#[tauri::command]
+fn retro_quitter_room(retro: EtatRetro<'_>) {
+    retro.quitter_room()
+}
+
+/// Le ping vers un hôte, et ce qu'il vaut pour jouer.
+#[tauri::command]
+async fn retro_ping(adresse: String, port: Option<u16>) -> Result<(u128, String), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let p = squad_retro::netplay::mesurer_ping(
+            &adresse,
+            port.unwrap_or(squad_retro::room_reseau::PORT_ROOM),
+            Duration::from_secs(3),
+        )?;
+        Ok((p.as_millis(), squad_retro::netplay::qualite(p).to_string()))
+    })
+    .await
+    .map_err(|_| "Le test a planté.".to_string())?
+}
+
+/// La fenêtre SQUAD//RETRO : une page locale de l'app (dist/retro.html),
+/// qui marche aussi sans compte SQUAD — la base de l'app publique.
+const RETRO: &str = "retro";
+
+fn ouvrir_retro(app: &AppHandle) -> tauri::Result<()> {
+    if let Some(fenetre) = app.get_webview_window(RETRO) {
+        let _ = fenetre.show();
+        let _ = fenetre.set_focus();
+        return Ok(());
+    }
+    WebviewWindowBuilder::new(app, RETRO, WebviewUrl::App("retro.html".into()))
+        .title("SQUAD//RETRO")
+        .inner_size(1100.0, 720.0)
+        .min_inner_size(760.0, 480.0)
+        .center()
+        .build()?;
+    Ok(())
 }
 
 /// La boucle qui regarde quels jeux tournent, dans son propre fil pour ne
@@ -701,6 +1047,8 @@ pub fn run() {
             app.manage(hors_steam::HorsSteam::charger(donnees.as_ref().map(|d| d.join("hors-steam.json"))));
             app.manage(lol::Lol::nouveau());
             app.manage(mods::Mods::charger(donnees.clone()));
+            app.manage(std::sync::Arc::new(retro::Retro::charger(donnees.clone())));
+            retro::demarrer_manettes(app.handle());
             if SEUL {
                 // Au démarrage de Windows, il attend LoL sans rien ouvrir.
                 if !lance_par_windows {
@@ -730,6 +1078,7 @@ pub fn run() {
                 None::<&str>,
             )?;
             let compagnon = MenuItem::with_id(app, "compagnon", "Ouvrir le compagnon LoL", true, None::<&str>)?;
+            let retro = MenuItem::with_id(app, "retro", "SQUAD//RETRO", true, None::<&str>)?;
             let compagnon_auto = CheckMenuItem::with_id(
                 app,
                 "compagnon_auto",
@@ -763,6 +1112,7 @@ pub fn run() {
                     &[
                         &ouvrir,
                         &compagnon,
+                        &retro,
                         &demarrage,
                         &invisible,
                         &compagnon_auto,
@@ -803,6 +1153,9 @@ pub fn run() {
                         let _ = app.emit("invisible", etat);
                     }
                     "verifier" => verifier_maintenant(app),
+                    "retro" => {
+                        let _ = ouvrir_retro(app);
+                    }
                     "compagnon" => {
                         let _ = creer_le_compagnon(app);
                     }
@@ -875,7 +1228,54 @@ pub fn run() {
             serveur_allumer,
             mod_installer,
             mod_desinstaller,
-            mods_installes
+            mods_installes,
+            retro_etat,
+            retro_choisir_dossier,
+            retro_choisir_retroarch,
+            retro_choisir_pseudo,
+            retro_choisir_canal,
+            retro_bibliotheque,
+            retro_rechercher,
+            retro_hasard,
+            retro_reprendre,
+            retro_doublons,
+            retro_lancer,
+            retro_installer,
+            retro_retour_arriere,
+            retro_integrite,
+            retro_assistant,
+            retro_enregistrer_profil,
+            retro_partie_test,
+            retro_arreter_partie_test,
+            retro_mods,
+            retro_installer_mod,
+            retro_mods_a_jour,
+            retro_mod_retour_arriere,
+            retro_diagnostic,
+            retro_exporter,
+            retro_restaurer,
+            retro_convertir,
+            retro_ouvrir_bios,
+            retro_heberger,
+            retro_rejoindre,
+            retro_lire_invitation,
+            retro_pret,
+            retro_lancer_room,
+            retro_quitter_room,
+            retro_ping,
+            retro_enregistrer_compte,
+            retro_supprimer_compte,
+            retro_choisir_compte,
+            retro_choisir_theme,
+            retro_croises,
+            retro_enregistrer_fiche,
+            retro_options_mod,
+            retro_avant_lancement,
+            retro_stats,
+            retro_dire,
+            retro_choisir_port,
+            retro_exclure,
+            retro_reserver
         ])
         .run(tauri::generate_context!())
         .expect("l'app n'a pas pu démarrer");
