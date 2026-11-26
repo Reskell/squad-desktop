@@ -139,6 +139,35 @@
   .habitant.gauche .avatar svg { transform:scaleX(-1); }
   @keyframes marche { from { transform:translateY(0); } to { transform:translateY(-4px); } }
 
+  /* Fiche : onglets */
+  .onglets { display:flex; gap:6px; margin:6px 0 12px; flex-wrap:wrap; }
+  .onglets button.actif { background:var(--accent); color:#fff; border-color:var(--accent); }
+  .statuts button.actif { background:var(--accent); color:#fff; border-color:var(--accent); }
+  textarea { width:100%; min-height:80px; background:var(--fond); color:var(--texte); border:1px solid var(--bord); border-radius:10px; padding:8px 10px; font:inherit; }
+  .etoile { font-size:20px; line-height:1; }
+  .etoile.on { color:#f5b342; }
+  /* Veille, mur de jaquettes, roue */
+  #veille { position:fixed; inset:0; z-index:20; background:#000; overflow:hidden; cursor:none; }
+  #veille[hidden] { display:none; }
+  #veille .defile { display:grid; grid-template-columns:repeat(8, 1fr); gap:14px; padding:14px; animation:monte 120s linear infinite; }
+  #veille .jaq { cursor:none; }
+  #veille .heure { position:fixed; right:30px; bottom:24px; font-size:42px; font-weight:700; color:#fff; text-shadow:0 2px 12px #000; }
+  @keyframes monte { from { transform:translateY(0); } to { transform:translateY(-50%); } }
+  .roue { width:320px; height:320px; border-radius:50%; margin:10px auto; position:relative; border:6px solid var(--accent); transition:transform 4.2s cubic-bezier(.17,.85,.25,1); overflow:hidden; }
+  .roue span { position:absolute; left:50%; top:50%; transform-origin:0 0; font-size:11px; font-weight:600; white-space:nowrap; color:#fff; text-shadow:0 1px 3px #000; }
+  .fleche-roue { text-align:center; font-size:28px; color:var(--accent); margin-bottom:-14px; }
+  .chargement { text-align:center; padding:20px; }
+  .chargement .astuce { color:var(--gris); margin-top:14px; font-style:italic; }
+  /* Stats */
+  .barres { display:grid; gap:6px; }
+  .barres .b2 { display:grid; grid-template-columns:130px 1fr 80px; gap:10px; align-items:center; }
+  .barres .rempli { height:12px; border-radius:6px; background:var(--accent); }
+  .chiffres { display:grid; grid-template-columns:repeat(auto-fill,minmax(140px,1fr)); gap:10px; }
+  .chiffres .carte b { font-size:24px; }
+  /* Chat de la room */
+  .chat { background:var(--fond); border:1px solid var(--bord); border-radius:10px; padding:8px 10px; height:160px; overflow:auto; margin:8px 0; font-size:13px; }
+  .chat b { color:var(--accent); }
+
   /* Assistant manette */
   .pad { display:grid; grid-template-columns:repeat(4, minmax(120px,1fr)); gap:8px; margin:12px 0; }
   .touche { background:var(--carte); border:1px solid var(--bord); border-radius:10px; padding:10px; text-align:center; }
@@ -158,6 +187,7 @@
   <button class="nav" data-vue="accueil">Accueil</button>
   <button class="nav" data-vue="plaza">Plaza</button>
   <button class="nav" data-vue="room">Jouer en ligne</button>
+  <button class="nav" data-vue="stats">Mon profil rétro</button>
   <div class="sep"></div>
   <div id="consoles"></div>
   <div class="sep"></div>
@@ -179,6 +209,7 @@
   <div id="vue"></div>
 </main>
 <div class="voile" id="voile" hidden><div class="boite" id="boite"></div></div>
+<div id="veille" hidden></div>
 <script>
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
@@ -310,11 +341,97 @@ function fermerVoile(force = false) {
 }
 $("#voile").addEventListener("click", (e) => { if (e.target.id === "voile") fermerVoile(); });
 
-function ouvrirFiche(f) {
+const STATUTS = [["a_faire", "À faire"], ["en_cours", "En cours"], ["fini", "Fini"], ["cent", "100 %"]];
+const IMAGES = [["", "Comme la console"], ["pixel_net", "Pixel net"], ["cathodique", "Écran cathodique"], ["lisse", "Lissé"]];
+function ouvrirFiche(f, onglet = "jouer") {
   son("valider");
+  const perso = JSON.parse(JSON.stringify(f.perso || {}));
+  perso.reglages = perso.reglages || {}; perso.codes = perso.codes || []; perso.options_mods = perso.options_mods || {};
+  perso.etiquettes = perso.etiquettes || []; perso.collections = perso.collections || [];
+  const zone = el("div");
+  const sauver = async (msg) => {
+    try {
+      const r = await invoke("retro_enregistrer_fiche", { console: f.console, titre: f.titre, fiche: perso });
+      f.perso = r; Object.assign(perso, JSON.parse(JSON.stringify(r)));
+      for (const x of fiches) if (x.console === f.console && x.titre === f.titre) x.perso = r;
+      dire(msg || "Fiche enregistrée.", "ok"); son("valider");
+      if (["accueil", "console"].includes(vue)) dessiner();
+      return true;
+    }
+    catch (e) { dire(String(e), "erreur"); son("erreur"); return false; }
+  };
+  const etoile = el("button", { class: "b etoile" + (perso.favori ? " on" : ""), title: "Favori épinglé en haut de l'accueil", onclick: async () => { perso.favori = !perso.favori; etoile.classList.toggle("on", perso.favori); await sauver(perso.favori ? "Épinglé en haut de l'accueil." : "Retiré des favoris."); } }, "★");
+  const onglets = [["jouer", "Jouer"], ["fiche", "Ma fiche"], ["reglages", "Réglages du jeu"], ["codes", "Codes"], ["commandes", "Commandes"]];
+  const barre = el("div", { class: "onglets" });
+  function montrer(o) {
+    onglet = o;
+    barre.replaceChildren(...onglets.map(([id, nom]) => el("button", { class: "b" + (id === o ? " actif" : ""), onclick: () => { son("deplacer"); montrer(id); } }, nom)));
+    zone.replaceChildren();
+    if (o === "jouer") zone.append(ligneJeu(f));
+    if (o === "fiche") {
+      zone.append(el("div", { class: "ligne statuts" }, STATUTS.map(([id, nom]) => el("button", { class: "b" + (perso.statut === id ? " actif" : ""), onclick: async () => { perso.statut = perso.statut === id ? null : id; await sauver(); montrer("fiche"); } }, nom))));
+      const etiq = el("input", { value: perso.etiquettes.join(", "), placeholder: "coop, soirée, nostalgie…", style: "flex:1" });
+      const coll = el("input", { value: perso.collections.join(", "), placeholder: "Soirée party, Coop 4 joueurs…", style: "flex:1" });
+      const note = el("textarea", { placeholder: "Où j'en suis, mots de passe, astuces…" }, perso.note || "");
+      const liste = (t) => t.split(",").map((x) => x.trim()).filter(Boolean);
+      zone.append(el("div", { class: "ligne" }, el("label", {}, "Étiquettes"), etiq), el("div", { class: "ligne" }, el("label", {}, "Collections"), coll), note,
+        el("div", { class: "ligne" }, el("button", { class: "p", onclick: () => { perso.etiquettes = liste(etiq.value); perso.collections = liste(coll.value); perso.note = note.value; sauver(); } }, "Enregistrer"),
+          el("a", { class: "b", style: "text-decoration:none", href: `https://www.google.com/search?q=${encodeURIComponent(f.titre + " " + f.console_nom + " soluce")}`, target: "_blank" }, "Astuces et solutions ↗")));
+    }
+    if (o === "reglages") {
+      const r = perso.reglages;
+      const choixImage = el("select", { onchange: (e) => r.image = e.target.value || null }, IMAGES.map(([v, t]) => el("option", { value: v, selected: (r.image || "") === v }, t)));
+      const triple = (cle, texte) => el("div", { class: "ligne" }, el("label", {}, texte), el("select", { onchange: (e) => r[cle] = e.target.value === "" ? null : e.target.value === "1" },
+        el("option", { value: "", selected: r[cle] == null }, "Comme la console"), el("option", { value: "1", selected: r[cle] === true }, "Oui"), el("option", { value: "0", selected: r[cle] === false }, "Non")));
+      const vol = el("input", { type: "range", min: 0, max: 100, value: r.volume ?? 100, oninput: (e) => { r.volume = Number(e.target.value); lv.textContent = `${r.volume} %`; } });
+      const lv = el("span", {}, `${r.volume ?? 100} %`);
+      zone.append(...[el("p", { style: "color:var(--gris);margin-top:0" }, "Ces réglages ne valent que pour ce jeu et ce profil ; le reste suit la console."),
+        el("div", { class: "ligne" }, el("label", {}, "Image"), choixImage),
+        ["gamecube", "wii"].includes(f.console) ? triple("ecran_large", "Écran large 16:9") : triple("rembobinage", "Rembobinage"),
+        ["nes", "snes"].includes(f.console) ? triple("run_ahead", "Réduction de latence") : null,
+        triple("vibration", "Vibration"),
+        el("div", { class: "ligne" }, el("label", {}, "Volume"), vol, lv),
+        el("div", { class: "ligne" }, el("button", { class: "p", onclick: () => sauver("Réglages du jeu enregistrés : ils s'appliquent au prochain lancement.") }, "Enregistrer"),
+          el("button", { class: "b", onclick: async () => { perso.reglages = {}; await sauver("Réglages remis comme la console."); montrer("reglages"); } }, "Remettre comme la console"))].filter(Boolean));
+      // Le menu d'options standard, si cette version est un mod.
+      const vchoisie = f.variantes.find((x) => x.mod_installe);
+      if (vchoisie) invoke("retro_options_mod", { chemin: vchoisie.chemin }).then((m) => {
+        if (!m || !m[2].length) return;
+        const [id, nom, options] = m; perso.options_mods[id] = perso.options_mods[id] || {};
+        zone.append(el("h3", {}, `Options de ${nom}`), ...options.map((o) => el("div", { class: "ligne" }, el("label", { title: o.aide }, o.nom),
+          el("select", { onchange: (e) => perso.options_mods[id][o.id] = Number(e.target.value) }, o.choix.map((c, i) => el("option", { value: i, selected: (perso.options_mods[id][o.id] ?? o.defaut) === i }, c.nom))))),
+          el("div", { class: "ligne" }, el("button", { class: "p", onclick: () => sauver(`Options de ${nom} enregistrées.`) }, "Enregistrer les options")));
+      }).catch(() => {});
+    }
+    if (o === "codes") {
+      const dolphin = ["gamecube", "wii"].includes(f.console);
+      zone.append(el("p", { style: "color:var(--gris);margin-top:0" }, dolphin ? "Codes Gecko ou Action Replay (déchiffrés) : une ligne « XXXXXXXX YYYYYYYY » par ligne. Ils s'appliquent au prochain lancement." : "Codes Game Genie / Pro Action Replay tels que le moteur les accepte. Ils s'appliquent au prochain lancement."));
+      perso.codes.forEach((c, i) => zone.append(el("div", { class: "jeu" }, el("div", { class: "titre" }, c.nom, el("small", {}, `${c.lignes.length} ligne(s)${dolphin ? " · " + (c.format === "action_replay" ? "Action Replay" : "Gecko") : ""}`)),
+        el("label", {}, el("input", { type: "checkbox", checked: c.actif, onchange: async (e) => { c.actif = e.target.checked; await sauver(c.actif ? `${c.nom} activé.` : `${c.nom} désactivé.`); } }), " actif"),
+        el("button", { class: "b", onclick: async () => { perso.codes.splice(i, 1); await sauver("Code supprimé."); montrer("codes"); } }, "Supprimer"))));
+      const nom = el("input", { placeholder: "Nom du code (ex. Vies infinies)", style: "flex:1" });
+      const lignes = el("textarea", { placeholder: dolphin ? "04123456 00000063" : "SXIOPO" });
+      const format = dolphin ? el("select", {}, el("option", { value: "gecko" }, "Gecko"), el("option", { value: "action_replay" }, "Action Replay")) : null;
+      zone.append(el("h3", {}, "Ajouter un code"), el("div", { class: "ligne" }, nom, format), lignes,
+        el("div", { class: "ligne" }, el("button", { class: "p", onclick: async () => {
+          perso.codes.push({ nom: nom.value, format: format ? format.value : "retroarch", lignes: lignes.value.split("\n"), actif: true });
+          if (await sauver("Code ajouté et activé.")) montrer("codes"); else perso.codes.pop();
+        } }, "Ajouter")));
+    }
+    if (o === "commandes") {
+      zone.append(el("p", { style: "color:var(--gris);margin-top:0" }, "Sur ta manette, pour ce jeu :"));
+      invoke("retro_assistant", { console: f.console }).then((a) => {
+        const etape = a.etapes.find((x) => x.type === "test");
+        if (!etape) return zone.append(el("div", { class: "vide" }, "Pas de disposition enregistrée."));
+        zone.append(el("div", { class: "pad" }, etape.boutons.map((b) => el("div", { class: "touche" }, b.nom, el("small", {}, NOMS_PAD[a.mapping[b.id]] || a.mapping[b.id])))),
+          el("p", { style: "color:var(--gris)" }, "Partout : L1+R1+Start+Select (ou Échap) pour revenir au launcher, L3+R3 (ou F1) pour le menu rapide, Espace pour l'avance rapide."));
+      }).catch(() => {});
+    }
+  }
   ouvrirVoile(el("div", { class: "fiche" }, jaquette(f, { statique: true }),
-    el("div", {}, el("small", { style: "color:var(--gris)" }, f.console_nom), el("h2", { style: "margin:2px 0 8px;font-size:22px" }, f.titre), ligneJeu(f),
-      el("div", { class: "ligne", style: "margin-top:16px" }, el("button", { class: "b", onclick: fermerVoile }, "Fermer")))));
+    el("div", {}, el("small", { style: "color:var(--gris)" }, f.console_nom), el("div", { style: "display:flex;gap:10px;align-items:center" }, el("h2", { style: "margin:2px 0 4px;font-size:22px;flex:1" }, f.titre), etoile),
+      barre, zone, el("div", { class: "ligne", style: "margin-top:16px" }, el("button", { class: "b", onclick: fermerVoile }, "Fermer")))));
+  montrer(onglet);
 }
 
 // ---------- Profils : « Qui joue ? » ----------
@@ -331,7 +448,7 @@ function ecranProfils() {
 async function entrer(id) {
   await essayer(() => invoke("retro_choisir_compte", { id })).catch(() => {});
   son("entrer"); delete $("#voile").dataset.bloque; $("#voile").hidden = true;
-  await rafraichir(); dessiner(); dire(`Salut ${monPseudo()} !`, "ok");
+  await rafraichir(); await scanner(); dessiner(); dire(`${salut()} ${monPseudo()} !`, "ok"); nouveautes();
 }
 
 // ---------- Créateur d'avatar ----------
@@ -393,13 +510,23 @@ function appliquerTheme() {
   document.documentElement.style.setProperty("--accent", (PALETTES[r.theme] || PALETTES.squad)[1]);
   document.body.classList.toggle("clair", !!r.clair);
 }
+const salut = () => { const h = new Date().getHours(); return h < 6 ? "Encore debout," : h < 12 ? "Bonjour" : h < 18 ? "Salut" : "Bonsoir"; };
 function horloge() { const d = new Date(); $("#heure").textContent = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`; }
 horloge(); setInterval(horloge, 20000);
 
 // ---------- Vues ----------
+// Une vue se construit à part puis remplace l'ancienne : deux dessins lancés
+// coup sur coup (scan + changement de vue) ne s'additionnent jamais.
+let tirage = 0;
 async function dessiner() {
   arreterPlaza();
-  const v = $("#vue"); v.replaceChildren();
+  const jeton = ++tirage, cadre = el("div");
+  await construire(cadre);
+  if (jeton !== tirage) return;
+  $("#vue").replaceChildren(...cadre.childNodes);
+  if (vue === "plaza") demarrerPlaza();
+}
+async function construire(v) {
   if (vue === "accueil") return accueil(v);
   if (vue === "console") return vueConsole(v);
   if (vue === "recherche") return v.append(el("h2", {}, "Résultats"), mosaique(resultats));
@@ -408,6 +535,26 @@ async function dessiner() {
   if (vue === "assistant") return assistant(v);
   if (vue === "room") return vueRoom(v);
   if (vue === "plaza") return vuePlaza(v);
+  if (vue === "stats") return vueStats(v);
+}
+
+// ---------- Mon profil rétro ----------
+const heures = (s) => s < 3600 ? `${Math.round(s / 60)} min` : `${(s / 3600).toFixed(1)} h`;
+async function vueStats(v) {
+  const st = await invoke("retro_stats");
+  v.append(el("div", { style: "display:flex;gap:16px;align-items:center;margin-bottom:12px" }, avatar(monAvatar(), 80), el("div", {}, el("h2", { style: "margin:0" }, monPseudo()), el("small", { style: "color:var(--gris)" }, "Ton profil rétro"))));
+  const chiffre = (n, t) => el("div", { class: "carte" }, el("b", {}, n), el("small", {}, t));
+  v.append(el("div", { class: "chiffres" }, chiffre(heures(st.total_s), "de jeu en tout"), chiffre(st.sessions, "parties"), chiffre(st.jours, "jours de jeu"),
+    chiffre(heures(st.plus_longue_s), "plus longue partie"), chiffre(st.finis, "jeux finis"), chiffre(st.cent, "jeux à 100 %"), chiffre(st.favoris, "favoris")));
+  if (st.par_console.length) {
+    const max = st.par_console[0][1] || 1;
+    v.append(el("h3", {}, "Par console"), el("div", { class: "barres" }, st.par_console.map(([c, s]) => el("div", { class: "b2" }, el("span", {}, nomConsole(c)), el("div", { class: "rempli", style: `width:${Math.max(2, 100 * s / max)}%;background:${COULEUR[c] || "var(--accent)"}` }), el("span", { style: "color:var(--gris)" }, heures(s))))));
+  }
+  if (st.top.length) {
+    v.append(el("h3", {}, "Tes jeux les plus joués"));
+    v.append(el("div", { class: "grille" }, st.top.map(([c, t, s], i) => el("div", { class: "jeu" }, el("b", {}, `${i + 1}.`), el("div", { class: "titre" }, t, el("small", {}, nomConsole(c))), el("span", { class: "badge" }, heures(s))))));
+  }
+  if (!st.sessions) v.append(el("div", { class: "vide" }, "Lance un jeu : ton profil se remplira tout seul."));
 }
 
 let resultats = [];
@@ -445,6 +592,15 @@ async function accueil(v) {
         reprendre.length > 1 ? el("div", { class: "mini" }, reprendre.slice(1, 7).filter((x) => x.f).map((x) => jaquette(x.f))) : null)));
   } else v.append(el("div", { class: "carte" }, el("b", {}, "Reprendre"), el("small", {}, "Les jeux que tu lances apparaîtront ici, avec un bouton pour reprendre en un clic.")));
 
+  const favoris = fiches.filter((f) => f.perso?.favori);
+  if (favoris.length) { v.append(el("h3", {}, "★ Épinglés")); v.append(mosaique(favoris)); }
+  // Le soir, les jeux à plusieurs passent devant.
+  const h = new Date().getHours();
+  if (h >= 18 || h < 2) {
+    const multi = fiches.filter((f) => f.joueurs > 1).sort((a, b) => (b.netplay - a.netplay) || (b.joueurs - a.joueurs)).slice(0, 8);
+    if (multi.length) { v.append(el("h3", {}, "Ce soir, à plusieurs")); v.append(el("div", { class: "mini" }, multi.map((f) => jaquette(f)))); }
+  }
+
   v.append(el("h3", {}, "Consoles"));
   v.append(el("div", { class: "tuiles" }, consolesTriees().map((c) => {
     const n = fiches.filter((f) => f.console === c.console).length;
@@ -460,14 +616,76 @@ async function accueil(v) {
     el("span", { style: "margin-left:auto;color:var(--gris)" }, croises.length ? `${croises.length} pote${croises.length > 1 ? "s" : ""} croisé${croises.length > 1 ? "s" : ""} en room →` : "Joue en ligne : tes potes apparaîtront ici →")));
 
   if (fiches.length) {
-    v.append(el("h3", {}, "Toute ta bibliothèque"));
+    v.append(el("div", { class: "ligne", style: "margin-top:22px" }, el("h3", { style: "margin:0;flex:1" }, "Toute ta bibliothèque"),
+      el("button", { class: "b", onclick: () => roue(filtrees()) }, "🎡 Roue de la fortune"),
+      el("button", { class: "b", onclick: () => veille(true) }, "Mur de jaquettes")));
     const presentes = consolesTriees().filter((c) => fiches.some((f) => f.console === c.console));
-    v.append(el("div", { class: "filtres" },
-      el("button", { class: "b" + (!filtre ? " actif" : ""), onclick: () => { filtre = null; son("deplacer"); dessiner(); } }, "Tous"),
-      presentes.map((c) => el("button", { class: "b" + (filtre === c.console ? " actif" : ""), onclick: () => { filtre = c.console; son("deplacer"); dessiner(); } }, c.nom))));
-    v.append(mosaique(fiches.filter((f) => !filtre || f.console === filtre)));
+    const collections = [...new Set(fiches.flatMap((f) => f.perso?.collections || []))].sort();
+    const etiquettes = [...new Set(fiches.flatMap((f) => f.perso?.etiquettes || []))].sort();
+    const puce = (id, nom) => el("button", { class: "b" + (filtre === id ? " actif" : ""), onclick: () => { filtre = filtre === id ? null : id; son("deplacer"); dessiner(); } }, nom);
+    v.append(el("div", { class: "filtres" }, el("button", { class: "b" + (!filtre ? " actif" : ""), onclick: () => { filtre = null; son("deplacer"); dessiner(); } }, "Tous"),
+      presentes.map((c) => puce(c.console, c.nom)),
+      puce("@2", "2 joueurs et +"), puce("@4", "4 joueurs"), puce("@net", "Netplay testé"),
+      puce("@a_faire", "À faire"), puce("@en_cours", "En cours"), puce("@fini", "Finis"),
+      collections.map((c) => puce("#" + c, "📁 " + c)), etiquettes.map((e) => puce("%" + e, "🏷 " + e))));
+    v.append(mosaique(filtrees()));
+    const series = seriesDe(fiches);
+    if (series.length) {
+      v.append(el("h3", {}, "Séries"));
+      for (const [nom, jeux] of series) v.append(el("div", { style: "margin-bottom:10px" }, el("b", {}, `${nom} (${jeux.length})`), el("div", { class: "mini" }, jeux.map((f) => jaquette(f)))));
+    }
   }
 }
+function filtrees() {
+  const f = filtre;
+  return fiches.filter((x) => {
+    if (!f) return true;
+    if (f === "@2") return x.joueurs >= 2;
+    if (f === "@4") return x.joueurs >= 4;
+    if (f === "@net") return x.netplay;
+    if (f === "@fini") return ["fini", "cent"].includes(x.perso?.statut);
+    if (f.startsWith("@")) return x.perso?.statut === f.slice(1);
+    if (f.startsWith("#")) return (x.perso?.collections || []).includes(f.slice(1));
+    if (f.startsWith("%")) return (x.perso?.etiquettes || []).includes(f.slice(1));
+    return x.console === f;
+  });
+}
+// Les séries : les jeux qui partagent le début de leur titre (« Mario Party », « Zelda »).
+function seriesDe(liste) {
+  const cle = (t) => t.replace(/^(the|le|la|les)\s+/i, "").split(/[:\-–]|\s\d|\s(?:II|III|IV|V|VI|64|DS|Advance)\b/)[0].trim().toLowerCase();
+  const groupes = new Map();
+  for (const f of liste) { const k = cle(f.titre); if (k.length < 3) continue; if (!groupes.has(k)) groupes.set(k, []); groupes.get(k).push(f); }
+  return [...groupes.entries()].filter(([, l]) => l.length > 1).map(([k, l]) => [l[0].titre.slice(0, k.length).trim() || k, l]).sort((a, b) => b[1].length - a[1].length);
+}
+
+// ---------- Roue de la fortune ----------
+function roue(liste) {
+  liste = liste.slice(0, 16);
+  if (liste.length < 2) return dire("Il faut au moins deux jeux pour faire tourner la roue.", "erreur");
+  const pas = 360 / liste.length;
+  const couleurs = liste.map((f, i) => `${COULEUR[f.console] || "#7c5cff"} ${i * pas}deg ${(i + 1) * pas}deg`).join(",");
+  const disque = el("div", { class: "roue", style: `background:conic-gradient(${couleurs})` }, liste.map((f, i) => el("span", { style: `transform:rotate(${i * pas + pas / 2 - 90}deg) translate(30px,-6px)` }, f.titre.slice(0, 22))));
+  const gagnant = Math.floor(Math.random() * liste.length);
+  ouvrirVoile(el("h2", { style: "text-align:center" }, "Roue de la fortune"), el("div", { class: "fleche-roue" }, "▼"), disque, el("div", { class: "ligne", style: "justify-content:center" }, el("button", { class: "b", onclick: fermerVoile }, "Fermer")));
+  son("entrer");
+  setTimeout(() => { disque.style.transform = `rotate(${360 * 6 - (gagnant * pas + pas / 2)}deg)`; }, 50);
+  setTimeout(() => { son("valider"); dire(`La roue a choisi : ${liste[gagnant].titre} !`, "ok"); ouvrirFiche(liste[gagnant]); }, 4500);
+}
+
+// ---------- Écran de veille / mur de jaquettes ----------
+let inactif = Date.now();
+function veille(demande = false) {
+  if (!fiches.length) return;
+  const zone = $("#veille");
+  const liste = [...fiches].sort(() => Math.random() - .5);
+  const tout = liste.concat(liste, liste, liste).slice(0, Math.max(48, liste.length * 2));
+  const heure = el("div", { class: "heure" }, $("#heure").textContent);
+  zone.replaceChildren(el("div", { class: "defile" }, tout.map((f) => jaquette(f, { statique: true }))), heure);
+  zone.hidden = false; zone.dataset.demande = demande ? "1" : "";
+}
+function reveil() { inactif = Date.now(); const z = $("#veille"); if (!z.hidden) { z.hidden = true; z.replaceChildren(); son("retour"); return true; } return false; }
+["mousemove", "keydown", "mousedown", "wheel"].forEach((t) => document.addEventListener(t, (e) => { if (reveil() && t !== "mousemove") e.preventDefault(); }, true));
+setInterval(() => { if (Date.now() - inactif > 5 * 60 * 1000 && $("#veille").hidden && $("#voile").hidden && document.hasFocus()) veille(); }, 30000);
 
 function vueConsole(v) {
   const c = etat.consoles.find((x) => x.console === consoleActive);
@@ -505,9 +723,29 @@ function ligneJeu(f) {
     zoneMods);
 }
 
+const ASTUCES = [
+  "L1 + R1 + Start + Select te ramène au launcher depuis n'importe quel jeu.",
+  "L3 + R3 ouvre le menu rapide : sauvegarder, charger, quitter.",
+  "Espace accélère le jeu : pratique pour les dialogues.",
+  "Ta partie est sauvegardée en quittant : tu reprendras au même endroit.",
+  "Dans la fiche d'un jeu, l'onglet Réglages change l'image ou le volume pour ce jeu seulement.",
+  "★ dans la fiche d'un jeu l'épingle en haut de l'accueil.",
+  "Le bouton « Inviter des potes » ouvre une room sur le jeu en cours.",
+  "Sur NES et SNES, la réduction de latence rend les sauts plus précis.",
+  "Les codes de triche se gèrent dans l'onglet Codes de la fiche du jeu.",
+];
+let rappel = null;
 async function lancer(chemin, titre) {
-  dire(`Lancement de ${titre}…`); son("entrer");
-  await essayer(() => invoke("retro_lancer", { chemin }), `${titre} est lancé. Échap ou L1+R1+Start+Select pour revenir. Menu rapide : L3+R3.`).catch(() => {});
+  son("entrer");
+  ouvrirVoile(el("div", { class: "chargement" }, el("h2", {}, `Lancement de ${titre}…`), el("div", { class: "barre" }, el("div", { style: "width:60%" })),
+    el("div", { class: "astuce" }, "Astuce : " + ASTUCES[Math.floor(Math.random() * ASTUCES.length)])));
+  try {
+    const maj = await invoke("retro_avant_lancement", { chemin });
+    if (maj) dire(maj, "ok");
+    await invoke("retro_lancer", { chemin });
+    dire(`${titre} est lancé. Échap ou L1+R1+Start+Select pour revenir. Menu rapide : L3+R3.`, "ok");
+  } catch (e) { dire(String(e), "erreur"); son("erreur"); }
+  setTimeout(() => fermerVoile(true), 1500);
 }
 
 // ---------- Plaza ----------
@@ -550,9 +788,10 @@ async function vuePlaza(v) {
     }
     animPlaza = requestAnimationFrame(bouger);
   };
-  if (window.requestAnimationFrame) animPlaza = requestAnimationFrame(bouger);
-  else etres.forEach((e) => e.b.style.left = `${e.x}%`);
+  etres.forEach((e) => e.b.style.left = `${e.x}%`);
+  demarrerPlaza = () => { if (window.requestAnimationFrame) animPlaza = requestAnimationFrame(bouger); };
 }
+let demarrerPlaza = () => {};
 
 // ---------- Installation ----------
 let progres = null;
@@ -673,17 +912,31 @@ function vueRoom(v) {
     el("div", { class: "ligne" }, mdp2, el("button", { class: "p", onclick: () => essayer(() => invoke("retro_rejoindre", { lien: lien.value, chemin: roomJeu, motDePasse: mdp2.value }), "Connexion à la room…").catch(() => {}) }, "Rejoindre"))));
 }
 function dessinerRoom(v) {
-  const hote = room.hote === (etat.reglages.pseudo || "Joueur");
+  const moi = etat.reglages.pseudo || "Joueur", hote = room.hote === moi;
+  const ports = Array.from({ length: Math.min(room.max, 8) }, (_, i) => i + 1);
+  const message = el("input", { placeholder: "Écris un message…", style: "flex:1", maxlength: 200, onkeydown: (e) => { if (e.key === "Enter") envoyer(); } });
+  const envoyer = () => { const t = message.value.trim(); if (!t) return; invoke("retro_dire", { texte: t }).catch((e) => dire(String(e), "erreur")); message.value = ""; };
+  const chat = el("div", { class: "chat" }, (room.messages || []).map((m) => el("div", {}, el("b", {}, m.pseudo), " : ", m.texte)));
+  const reserve = el("input", { placeholder: "Pseudo d'un pote" });
   v.append(el("div", { class: "carte" }, el("b", {}, `${room.titre} — room de ${room.hote}`),
-    el("small", {}, `${room.places.length}/${room.max} joueurs${room.privee ? " · privée" : ""}`),
+    el("small", {}, `${room.places.length}/${room.max} joueurs${room.privee ? " · privée" : ""}${(room.reserves || []).length ? ` · places gardées pour ${room.reserves.join(", ")}` : ""}`),
     lienRoom && hote ? el("div", { class: "ligne" }, el("code", {}, lienRoom), el("button", { class: "b", onclick: () => navigator.clipboard.writeText(lienRoom) }, "Copier le lien")) : null,
-    el("div", { class: "places" }, room.places.map((p) => el("div", { class: "place" }, el("span", {}, avatar(p.avatar || avatarDe(p.pseudo), 30), p.pseudo + (p.pseudo === room.hote ? " (hôte)" : "")), el("span", { class: "badge " + (p.pret ? "ok" : "") }, p.pret ? "Prêt" : "Pas prêt")))),
+    el("div", { class: "places" }, room.places.map((p) => el("div", { class: "place" },
+      el("span", {}, avatar(p.avatar || avatarDe(p.pseudo), 30), p.pseudo + (p.pseudo === room.hote ? " (hôte)" : "")),
+      el("span", { style: "display:flex;gap:8px;align-items:center" },
+        p.pseudo === moi ? el("select", { title: "Ton port manette (joueur 1, 2…)", onchange: (e) => invoke("retro_choisir_port", { port: Number(e.target.value) }).catch((er) => dire(String(er), "erreur")) },
+          ports.map((n) => el("option", { value: n, selected: p.port === n }, `Manette ${n}`))) : el("span", { class: "badge" }, p.port ? `Manette ${p.port}` : "—"),
+        el("span", { class: "badge " + (p.pret ? "ok" : "") }, p.pret ? "Prêt" : "Pas prêt"),
+        hote && p.pseudo !== moi ? el("button", { class: "b", title: "Retirer de la room", onclick: () => essayer(() => invoke("retro_exclure", { pseudo: p.pseudo }), `${p.pseudo} a été retiré de la room.`).catch(() => {}) }, "Retirer") : null)))),
+    chat, el("div", { class: "ligne" }, message, el("button", { class: "b", onclick: envoyer }, "Envoyer")),
+    hote ? el("div", { class: "ligne" }, el("label", {}, "Garder une place"), reserve, el("button", { class: "b", onclick: () => essayer(() => invoke("retro_reserver", { pseudo: reserve.value }), "Places mises à jour.").catch(() => {}) }, "Garder / libérer")) : null,
     compte != null ? el("div", { class: "compte" }, compte) : null,
     room.etat.etat === "en_jeu" ? el("div", { class: "compte" }, "C'est parti !") : null,
     el("div", { class: "ligne" },
       el("button", { class: "b", onclick: () => essayer(() => invoke("retro_pret")).catch(() => {}) }, "Prêt / pas prêt"),
       hote ? el("button", { class: "p", disabled: !(room.places.length >= 2 && room.places.every((p) => p.pret)), onclick: () => essayer(() => invoke("retro_lancer_room")).catch(() => {}) }, "Lancer la partie") : null,
       el("button", { class: "b", onclick: async () => { await invoke("retro_quitter_room"); room = null; lienRoom = null; compte = null; dessiner(); } }, "Quitter la room"))));
+  setTimeout(() => { chat.scrollTop = chat.scrollHeight; }, 0);
 }
 listen("retro-room", ({ payload }) => {
   const avant = room?.places.length || 0;
@@ -694,7 +947,8 @@ listen("retro-room", ({ payload }) => {
     clearInterval(window._compte);
     window._compte = setInterval(() => { const s = Math.ceil((fin - Date.now()) / 1000); compte = s > 0 ? s : null; if (s <= 0) clearInterval(window._compte); else son("deplacer"); if (vue === "room") dessiner(); }, 1000);
   } else { compte = null; }
-  if (vue === "room" || vue === "plaza") dessiner();
+  const tape = document.activeElement?.matches?.(".carte input");
+  if (vue === "plaza" || (vue === "room" && !tape)) dessiner();
 });
 listen("retro-room-refus", ({ payload }) => { dire(payload, "erreur"); son("erreur"); room = null; if (vue === "room") dessiner(); });
 
@@ -801,6 +1055,7 @@ listen("retro-manette", ({ payload }) => {
     return;
   }
   if (!appuye || !document.hasFocus()) return;
+  if (reveil()) return;
   const racine = $("#voile").hidden ? document : $("#boite");
   const focusables = [...racine.querySelectorAll("button:not(:disabled), select, input")].filter((e) => e.offsetParent);
   const actuel = focusables.includes(document.activeElement) ? document.activeElement : null;
@@ -818,8 +1073,29 @@ listen("retro-manette", ({ payload }) => {
   else if (bouton === "start") ecranProfils();
 });
 listen("retro-installation", ({ payload }) => progres?.(payload));
-listen("retro-partie", ({ payload }) => { if (!payload.en_cours) { dire(`Partie de ${payload.titre} terminée.`); if (vue === "accueil") dessiner(); } });
+listen("retro-partie", ({ payload }) => {
+  clearTimeout(rappel);
+  if (payload.en_cours) {
+    // Rappel de pause au bout de 2 h de jeu.
+    rappel = setTimeout(() => { dire(`Ça fait 2 h que tu joues à ${payload.titre} : pense à faire une pause, boire un verre d'eau.`, "ok"); son("entrer"); }, 2 * 3600 * 1000);
+  } else { dire(`Partie de ${payload.titre} terminée.`); scanner(); }
+});
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") fermerVoile(); });
+
+// ---------- Nouveautés ----------
+const NOUVEAUTES = { version: "hub-2", points: [
+  "Ma fiche : statut (à faire, en cours, fini, 100 %), favoris épinglés, étiquettes, collections et notes, pour chaque profil.",
+  "Réglages par jeu (image, 16:9, volume, vibration, réduction de latence) et codes de triche dans la fiche d'un jeu.",
+  "Room : chat, choix du port manette, places gardées pour des potes, retrait d'un joueur.",
+  "4 manettes reconnues sur GameCube, mises à jour des mods vérifiées avant chaque lancement.",
+  "Roue de la fortune, mur de jaquettes, écran de veille, séries regroupées, recherche qui tolère les fautes.",
+  "Mon profil rétro : ton temps de jeu, tes jeux les plus joués, tes jeux finis.",
+] };
+function nouveautes() {
+  if (memo.lire("nouveautes") === NOUVEAUTES.version) return;
+  memo.ecrire("nouveautes", NOUVEAUTES.version);
+  ouvrirVoile(el("h2", {}, "Quoi de neuf dans SQUAD//RETRO"), el("ul", {}, NOUVEAUTES.points.map((p) => el("li", { style: "margin:6px 0" }, p))), el("div", { class: "ligne" }, el("button", { class: "p", onclick: fermerVoile }, "Super !")));
+}
 
 // ---------- Démarrage ----------
 async function rafraichir() { etat = await invoke("retro_etat"); dessinerNav(); }
@@ -835,7 +1111,7 @@ async function scanner() {
   await rafraichir(); await scanner(); dessiner();
   // « Qui joue ? » au démarrage, sauf si on entre directement avec le dernier profil.
   if (!etat.comptes.liste.length || !etat.reglages.entrer_direct || !compteActif()) ecranProfils();
-  else dire(`Salut ${monPseudo()} !`, "ok");
+  else { dire(`${salut()} ${monPseudo()} !`, "ok"); nouveautes(); }
 })();
 </script>
 </body>
