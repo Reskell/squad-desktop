@@ -64,6 +64,11 @@ fn main() {
                 "retro_lancer_room",
                 "retro_quitter_room",
                 "retro_ping",
+                "retro_enregistrer_compte",
+                "retro_supprimer_compte",
+                "retro_choisir_compte",
+                "retro_choisir_theme",
+                "retro_croises",
             ])),
     )
     .expect("échec de la préparation de la compilation");

@@ -40,6 +40,11 @@
     "allow-retro-pret",
     "allow-retro-lancer-room",
     "allow-retro-quitter-room",
-    "allow-retro-ping"
+    "allow-retro-ping",
+    "allow-retro-enregistrer-compte",
+    "allow-retro-supprimer-compte",
+    "allow-retro-choisir-compte",
+    "allow-retro-choisir-theme",
+    "allow-retro-croises"
   ]
 }

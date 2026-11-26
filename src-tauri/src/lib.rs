@@ -328,6 +328,31 @@ fn retro_choisir_pseudo(retro: EtatRetro<'_>, pseudo: String) {
 }
 
 #[tauri::command]
+fn retro_enregistrer_compte(retro: EtatRetro<'_>, compte: squad_retro::avatar::Compte) -> Result<squad_retro::avatar::Compte, String> {
+    retro.enregistrer_compte(compte)
+}
+
+#[tauri::command]
+fn retro_supprimer_compte(retro: EtatRetro<'_>, id: String) {
+    retro.supprimer_compte(&id)
+}
+
+#[tauri::command]
+fn retro_choisir_compte(retro: EtatRetro<'_>, id: Option<String>) -> Result<(), String> {
+    retro.choisir_compte(id.as_deref())
+}
+
+#[tauri::command]
+fn retro_choisir_theme(retro: EtatRetro<'_>, theme: Option<String>, clair: bool, muet: bool, entrer_direct: bool) {
+    retro.choisir_theme(theme, clair, muet, entrer_direct)
+}
+
+#[tauri::command]
+fn retro_croises(retro: EtatRetro<'_>) -> Vec<squad_retro::avatar::Croise> {
+    retro.croises()
+}
+
+#[tauri::command]
 fn retro_choisir_canal(retro: EtatRetro<'_>, canal: squad_retro::versions::Canal) {
     retro.choisir_canal(canal)
 }
@@ -1196,7 +1221,12 @@ pub fn run() {
             retro_pret,
             retro_lancer_room,
             retro_quitter_room,
-            retro_ping
+            retro_ping,
+            retro_enregistrer_compte,
+            retro_supprimer_compte,
+            retro_choisir_compte,
+            retro_choisir_theme,
+            retro_croises
         ])
         .run(tauri::generate_context!())
         .expect("l'app n'a pas pu démarrer");

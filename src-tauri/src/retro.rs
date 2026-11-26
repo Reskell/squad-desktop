@@ -12,7 +12,9 @@
 //! Tout vit dans `<données de l'app>/retro/` et `retro.json`.
 
 use serde::{Deserialize, Serialize};
+use squad_retro::avatar::{self, Avatar, Compte, Comptes, Croise};
 use squad_retro::bibliotheque::{self, Bibliotheque, Options};
+use squad_retro::jaquettes;
 use squad_retro::catalogue::{Catalogue, Statut};
 use squad_retro::historique::{Historique, Partie};
 use squad_retro::installation::{self, Etat};
@@ -46,6 +48,18 @@ pub struct ReglagesRetro {
     /// La révision des versions validées déjà appliquée.
     #[serde(default)]
     pub revision: u32,
+    /// La palette de l'interface (« squad », « gamecube »…).
+    #[serde(default)]
+    pub theme: Option<String>,
+    /// Vrai pour le thème clair.
+    #[serde(default)]
+    pub clair: bool,
+    /// Vrai pour couper les sons de menu.
+    #[serde(default)]
+    pub muet: bool,
+    /// Vrai pour entrer directement avec le dernier profil, sans l'écran de choix.
+    #[serde(default)]
+    pub entrer_direct: bool,
 }
 
 #[derive(Serialize, Clone)]
@@ -70,6 +84,8 @@ pub struct FicheVisible {
     pub netplay: bool,
     /// Temps joué, en secondes.
     pub temps: u64,
+    /// L'adresse de la jaquette (base publique, rien n'est livré avec l'app).
+    pub jaquette: String,
     pub variantes: Vec<VarianteVisible>,
 }
 
@@ -91,6 +107,7 @@ pub struct EtatVisible {
     pub versions: BTreeMap<String, String>,
     pub dossier_bios: String,
     pub manettes: Vec<String>,
+    pub comptes: Comptes,
 }
 
 #[derive(Serialize, Clone)]
@@ -120,6 +137,8 @@ pub struct Retro {
     prevue: Mutex<Option<(String, Session)>>,
     /// Vrai pendant une installation : une seule à la fois.
     installation: std::sync::atomic::AtomicBool,
+    comptes: Mutex<Comptes>,
+    croises: Mutex<Vec<Croise>>,
 }
 
 fn lire_json<T: for<'a> Deserialize<'a> + Default>(f: &Path) -> T {
@@ -141,6 +160,8 @@ impl Retro {
         let reglages = fichier.as_deref().map(lire_json).unwrap_or_default();
         let donnees = donnees_app.unwrap_or_else(|| PathBuf::from(".")).join("retro");
         let profils: BTreeMap<Console, Profil> = lire_json(&donnees.join("profils.json"));
+        let comptes: Comptes = lire_json(&donnees.join("comptes.json"));
+        let croises: Vec<Croise> = lire_json(&donnees.join("croises.json"));
         let catalogue = fs::read_to_string(donnees.join("catalogue.json"))
             .ok()
             .and_then(|t| Catalogue::lire(&t).ok())
@@ -162,6 +183,8 @@ impl Retro {
             client: Mutex::new(None),
             prevue: Mutex::new(None),
             installation: Default::default(),
+            comptes: Mutex::new(comptes),
+            croises: Mutex::new(croises),
         }
     }
 
@@ -249,6 +272,91 @@ impl Retro {
             versions: Etat::charger(&ou).versions(),
             dossier_bios: ou.bios().to_string_lossy().into_owned(),
             manettes: self.manettes.lock().unwrap().clone(),
+            comptes: self.comptes.lock().unwrap().clone(),
+        }
+    }
+
+    // ----- Profils SQUAD, avatars, plaza, thème -----
+
+    fn ecrire_comptes(&self) {
+        ecrire_json(&self.donnees.join("comptes.json"), &*self.comptes.lock().unwrap());
+    }
+
+    /// Crée ou modifie un profil ; le nouveau profil devient le profil actif.
+    pub fn enregistrer_compte(&self, compte: Compte) -> Result<Compte, String> {
+        let nouveau = compte.id.is_empty();
+        let c = self.comptes.lock().unwrap().enregistrer(compte, || {
+            let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or_default();
+            format!("p{t:x}")
+        })?;
+        self.ecrire_comptes();
+        let actif = self.comptes.lock().unwrap().actif.clone();
+        if nouveau || actif.as_deref() == Some(c.id.as_str()) {
+            self.choisir_compte(Some(&c.id))?;
+        }
+        Ok(c)
+    }
+
+    pub fn supprimer_compte(&self, id: &str) {
+        self.comptes.lock().unwrap().supprimer(id);
+        self.ecrire_comptes();
+    }
+
+    /// Entre avec un profil : son pseudo devient le pseudo en ligne.
+    pub fn choisir_compte(&self, id: Option<&str>) -> Result<(), String> {
+        let pseudo = {
+            let mut c = self.comptes.lock().unwrap();
+            match id {
+                Some(id) => {
+                    let p = c.liste.iter().find(|x| x.id == id).map(|x| x.pseudo.clone()).ok_or("Profil introuvable.")?;
+                    c.actif = Some(id.to_string());
+                    Some(p)
+                }
+                None => {
+                    c.actif = None;
+                    None
+                }
+            }
+        };
+        self.ecrire_comptes();
+        if let Some(p) = pseudo {
+            self.modifier(|r| r.pseudo = Some(p));
+        }
+        Ok(())
+    }
+
+    fn avatar(&self) -> Avatar {
+        self.comptes.lock().unwrap().actif().map(|c| c.avatar).unwrap_or_else(|| Avatar::depuis(&self.pseudo()))
+    }
+
+    pub fn choisir_theme(&self, theme: Option<String>, clair: bool, muet: bool, entrer_direct: bool) {
+        let theme = theme.filter(|t| t.len() <= 24 && t.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'));
+        self.modifier(|r| {
+            r.theme = theme;
+            r.clair = clair;
+            r.muet = muet;
+            r.entrer_direct = entrer_direct;
+        });
+    }
+
+    /// Les joueurs croisés en room, le plus récent d'abord.
+    pub fn croises(&self) -> Vec<Croise> {
+        self.croises.lock().unwrap().clone()
+    }
+
+    fn noter_croises(&self, room: &Room) {
+        let moi = self.pseudo();
+        let vu = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or_default();
+        let mut liste = self.croises.lock().unwrap();
+        let avant = liste.clone();
+        for p in room.places.iter().filter(|p| !p.pseudo.eq_ignore_ascii_case(&moi)) {
+            avatar::noter_croise(
+                &mut liste,
+                Croise { pseudo: p.pseudo.clone(), avatar: p.avatar.unwrap_or_else(|| Avatar::depuis(&p.pseudo)), jeu: room.titre.clone(), vu },
+            );
+        }
+        if *liste != avant {
+            ecrire_json(&self.donnees.join("croises.json"), &*liste);
         }
     }
 
@@ -293,6 +401,15 @@ impl Retro {
             joueurs: info.map(|i| i.joueurs).unwrap_or(1),
             netplay: info.map(|i| i.netplay).unwrap_or(false),
             temps: self.historique.lock().unwrap().temps(fiche.console, &fiche.titre),
+            jaquette: {
+                let v = fiche.preferee();
+                let nom = if v.reconnu {
+                    v.nom.clone()
+                } else {
+                    v.chemin.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| v.nom.clone())
+                };
+                jaquettes::jaquette(fiche.console, &v.chemin, &nom)
+            },
             variantes: fiche
                 .variantes
                 .iter()
@@ -644,7 +761,7 @@ impl Retro {
         Ok((
             console,
             titre,
-            Place { pseudo: self.pseudo(), pret: false, versions: Etat::charger(&self.emplacements()).versions(), sha1 },
+            Place { pseudo: self.pseudo(), pret: false, versions: Etat::charger(&self.emplacements()).versions(), sha1, avatar: Some(self.avatar()) },
         ))
     }
 
@@ -707,6 +824,7 @@ impl Retro {
     /// Chaque changement de la room : la fenêtre est prévenue, et le jeu se
     /// lance chez chacun à la fin du compte à rebours.
     fn sur_room(self: &Arc<Self>, app: &AppHandle, room: &Room, dans_ms: Option<u64>) {
+        self.noter_croises(room);
         let _ = app.emit("retro-room", serde_json::json!({ "room": room, "dans_ms": dans_ms }));
         if let Some(ms) = dans_ms {
             let moi = self.clone();
@@ -913,6 +1031,51 @@ mod tests {
         let relu = Retro::charger(Some(dir.join("app")));
         assert!(relu.reglages().dossier_jeux.is_some());
         assert_eq!(relu.reglages().pseudo.as_deref(), Some("Swift"));
+        // La jaquette d'un jeu SNES vient des miniatures libretro.
+        assert!(fiches[0].jaquette.contains("Super%20Nintendo"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn profils_theme_et_plaza() {
+        let dir = std::env::temp_dir().join(format!("squad-retro-profils-{}", std::process::id()));
+        let retro = Retro::charger(Some(dir.clone()));
+        let c = retro
+            .enregistrer_compte(Compte { id: String::new(), pseudo: "Vesper".into(), avatar: Avatar { tenue: 4, ..Default::default() } })
+            .unwrap();
+        // Un nouveau profil devient le profil actif, et son pseudo le pseudo en ligne.
+        assert_eq!(retro.etat().comptes.actif.as_deref(), Some(c.id.as_str()));
+        assert_eq!(retro.reglages().pseudo.as_deref(), Some("Vesper"));
+        assert_eq!(retro.avatar().tenue, 4);
+        retro.choisir_theme(Some("gamecube".into()), true, false, true);
+        retro.choisir_theme(Some("<script>".into()), true, false, true);
+        assert_eq!(retro.reglages().theme, None);
+        retro.choisir_theme(Some("wii".into()), true, true, false);
+
+        let place = |p: &str| Place { pseudo: p.into(), pret: false, versions: Default::default(), sha1: String::new(), avatar: None };
+        let room = Room {
+            id: "r".into(),
+            console: Console::Gamecube,
+            titre: "Mario Party 6".into(),
+            sha1: String::new(),
+            hote: "Bront".into(),
+            max: 4,
+            privee: false,
+            places: vec![place("Bront"), place("Vesper")],
+            etat: netplay::Etat::Attente,
+        };
+        retro.noter_croises(&room);
+        let croises = retro.croises();
+        assert_eq!(croises.len(), 1);
+        assert_eq!(croises[0].pseudo, "Bront");
+
+        let relu = Retro::charger(Some(dir.clone()));
+        assert_eq!(relu.etat().comptes.liste.len(), 1);
+        assert_eq!(relu.reglages().theme.as_deref(), Some("wii"));
+        assert!(relu.reglages().muet);
+        assert_eq!(relu.croises().len(), 1);
+        relu.supprimer_compte(&c.id);
+        assert!(relu.etat().comptes.liste.is_empty());
         let _ = fs::remove_dir_all(&dir);
     }
 

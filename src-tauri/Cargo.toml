@@ -29,7 +29,7 @@ tauri-plugin-global-shortcut = "2"
 # Les manettes, pour l'assistant de configuration de SQUAD//RETRO.
 gilrs = "0.11"
 # SQUAD//RETRO : le moteur du launcher rétro (bibliothèque, lancement des émulateurs).
-squad_retro = { git = "https://github.com/Reskell/Squad-retro", rev = "5beb58760f659cfb69f53da30d786b89020ead37" }
+squad_retro = { git = "https://github.com/Reskell/Squad-retro", rev = "37ec0fa9596eadeed0d39c9d5930016a96db2bab" }
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.56"
