@@ -216,8 +216,12 @@ const { listen } = window.__TAURI__.event;
 const REGIONS = { france:"FR", europe:"EU", usa:"US", japon:"JP", monde:"Monde", autre:"?" };
 const NOMS_PAD = { sud:"Bas (A / Croix)", est:"Droite (B / Rond)", ouest:"Gauche (X / Carré)", nord:"Haut (Y / Triangle)", l1:"L1 / LB", r1:"R1 / RB", l2:"L2 / LT", r2:"R2 / RT", l3:"Stick gauche (clic)", r3:"Stick droit (clic)", start:"Start", select:"Select / Back", haut:"Croix haut", bas:"Croix bas", gauche:"Croix gauche", droite:"Croix droite" };
 // Les consoles prioritaires d'abord, chacune avec sa couleur de tuile.
-const ORDRE_CONSOLES = ["gamecube", "wii", "n64", "snes", "nes", "ps1"];
-const COULEUR = { gamecube:"#6a5acd", wii:"#2fa8e0", n64:"#2e9e5b", snes:"#8e7cc3", nes:"#e4002b", ps1:"#7d8590" };
+const ORDRE_CONSOLES = ["gamecube", "wii", "n64", "snes", "nes", "ps1", "gba", "gb", "nds", "megadrive", "mastersystem", "pcengine", "saturn", "dreamcast", "psp", "ps2", "arcade"];
+// Les consoles toujours affichées ; les autres apparaissent dès qu'elles ont un jeu.
+const PRINCIPALES = ["gamecube", "wii", "n64", "snes", "nes", "ps1"];
+const COULEUR = { gamecube:"#6a5acd", wii:"#2fa8e0", n64:"#2e9e5b", snes:"#8e7cc3", nes:"#e4002b", ps1:"#7d8590",
+  gb:"#8bac0f", gba:"#5b3fa8", nds:"#3a4a5c", mastersystem:"#c8102e", megadrive:"#1f1f1f", pcengine:"#e5752a", saturn:"#5a6b8c", dreamcast:"#f07a1a", psp:"#2b2b38", ps2:"#1d3f8f", arcade:"#d4a017" };
+let toutesConsoles = false;
 // Nos palettes (aucune n'est la charte d'une marque).
 const PALETTES = { squad:["SQUAD","#7c5cff"], corneille:["Corneille","#19b5a5"], indigo:["Indigo","#6a5acd"], ciel:["Ciel","#2fa8e0"], cerise:["Cerise","#e4002b"], lavande:["Lavande","#8e7cc3"], foret:["Forêt","#2e9e5b"], soleil:["Soleil","#f5a623"], braise:["Braise","#ff6b3d"], bonbon:["Bonbon","#ff6fb5"], menthe:["Menthe","#3ecf8e"] };
 let etat = null, fiches = [], vue = "accueil", consoleActive = null, room = null, assistantEnCours = null, filtre = null, panneauReglages = "profil";
@@ -494,7 +498,7 @@ document.querySelectorAll(".nav[data-vue]").forEach((b) => b.onclick = () => all
 function dessinerNav() {
   document.querySelectorAll(".nav[data-vue]").forEach((b) => b.classList.toggle("active", b.dataset.vue === vue && !consoleActive));
   const zone = $("#consoles"); zone.replaceChildren();
-  for (const c of consolesTriees()) {
+  for (const c of consolesVisibles()) {
     const n = fiches.filter((f) => f.console === c.console).length;
     zone.append(el("button", { class: "nav" + (consoleActive === c.console ? " active" : ""), onclick: () => aller("console", c.console) },
       el("span", { class: "pastille" + (c.manques.length ? " non" : ""), title: c.manques.join("\n") || "Prête" }),
@@ -503,6 +507,7 @@ function dessinerNav() {
   const moi = $("#moi"); moi.replaceChildren(avatar(monAvatar(), 26), el("span", {}, monPseudo()));
   appliquerTheme();
 }
+const consolesVisibles = () => consolesTriees().filter((c) => PRINCIPALES.includes(c.console) || fiches.some((f) => f.console === c.console) || consoleActive === c.console);
 const consolesTriees = () => [...(etat?.consoles || [])].sort((a, b) => ORDRE_CONSOLES.indexOf(a.console) - ORDRE_CONSOLES.indexOf(b.console));
 $("#moi").onclick = () => { son("valider"); ecranProfils(); };
 function appliquerTheme() {
@@ -602,12 +607,14 @@ async function accueil(v) {
   }
 
   v.append(el("h3", {}, "Consoles"));
-  v.append(el("div", { class: "tuiles" }, consolesTriees().map((c) => {
+  const cachees = consolesTriees().filter((c) => !consolesVisibles().includes(c));
+  v.append(el("div", { class: "tuiles" }, ...(toutesConsoles ? consolesTriees() : consolesVisibles()).map((c) => {
     const n = fiches.filter((f) => f.console === c.console).length;
     return el("button", { class: "tuile", style: `--c:${COULEUR[c.console]}`, onclick: () => aller("console", c.console) },
       el("span", { class: "icone" }, el("span", { class: "pastille" + (c.manques.length ? " non" : "") })),
       el("b", {}, c.nom), el("small", {}, `${n} jeu${n > 1 ? "x" : ""} · ${c.manques.length ? "pas encore prête" : c.configuree ? "prête" : "à configurer"}`));
-  })));
+  }), cachees.length ? el("button", { class: "tuile neutre", onclick: () => { toutesConsoles = !toutesConsoles; son("deplacer"); dessiner(); } },
+    el("b", {}, toutesConsoles ? "Moins de consoles" : `+ ${cachees.length} consoles`), el("small", {}, toutesConsoles ? "" : "Game Boy, GBA, DS, Mega Drive, Saturn, Dreamcast, PSP, PS2, arcade…")) : null));
 
   v.append(el("h3", {}, "Ta plaza"));
   const croises = await invoke("retro_croises").catch(() => []);
@@ -694,7 +701,7 @@ function vueConsole(v) {
     el("button", { class: "b", onclick: () => ouvrirAssistant(c.console) }, c.configuree ? "Reconfigurer la manette" : "Configurer (première fois)")));
   for (const m of c.manques) v.append(el("div", { class: "carte", style: "margin:8px 0;color:var(--attention)" }, m,
     c.installable ? el("button", { class: "b", style: "margin-left:10px", onclick: () => aller("installation") }, "Installer") : el("button", { class: "b", style: "margin-left:10px", onclick: () => invoke("retro_ouvrir_bios") }, "Ouvrir le dossier BIOS")));
-  if (!liste.length) return v.append(el("div", { class: "vide" }, `Aucun jeu ici. Range tes propres copies dans le sous-dossier « ${consoleActive} » de ton dossier de jeux, puis rescanne.`));
+  if (!liste.length) return v.append(el("div", { class: "vide" }, `Aucun jeu ici. Range tes propres copies dans le sous-dossier « ${consoleActive} » de ton dossier de jeux, puis rescanne.${consoleActive === "arcade" ? " Pour l'arcade, garde les fichiers .zip tels quels (jeux FinalBurn Neo)." : ""}`));
   v.append(mosaique(liste));
 }
 
@@ -846,8 +853,8 @@ function assistant(v) {
     for (const [val, txt] of [["simulee", "Ma manette (Classic Controller simulé) — parfait pour la plupart des jeux"], ["vraie", "Une vraie Wiimote (Bluetooth ou Mayflash DolphinBar)"]])
       v.append(el("div", { class: "ligne" }, el("button", { class: a.profil.wiimote === val ? "p" : "b", onclick: () => { a.profil.wiimote = val; dessiner(); } }, txt)));
   } else if (etape.type === "bios") {
-    const manque = c.manques.some((m) => m.includes("BIOS"));
-    v.append(el("p", {}, manque ? "La PlayStation a besoin du BIOS de ta console (scph5502.bin pour une console européenne, scph5501.bin pour une américaine). Copie-le dans le dossier BIOS, puis vérifie." : "BIOS trouvé et valide ✔"));
+    const manque = c.manques.find((m) => m.includes("BIOS"));
+    v.append(el("p", {}, manque ? manque + " Puis clique sur Vérifier." : "BIOS trouvé et valide ✔"));
     v.append(el("div", { class: "ligne" }, el("button", { class: "b", onclick: () => invoke("retro_ouvrir_bios") }, "Ouvrir le dossier BIOS"), el("button", { class: "b", onclick: async () => { await rafraichir(); dessiner(); } }, "Vérifier")));
   } else if (etape.type === "image") {
     v.append(el("p", {}, "Quel rendu préfères-tu ?"));

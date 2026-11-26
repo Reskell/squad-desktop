@@ -3779,7 +3779,7 @@ dependencies = [
 [[package]]
 name = "squad_retro"
 version = "0.1.0"
-source = "git+https://github.com/Reskell/Squad-retro?rev=afa19df3ec28e241747090f004aeaec0565983e6#afa19df3ec28e241747090f004aeaec0565983e6"
+source = "git+https://github.com/Reskell/Squad-retro?rev=e26fc69dd39ed6d405aac6c093bddbb439d4078b#e26fc69dd39ed6d405aac6c093bddbb439d4078b"
 dependencies = [
  "crc32fast",
  "quick-xml 0.37.5",
