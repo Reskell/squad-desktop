@@ -118,6 +118,8 @@ pub struct Retro {
     client: Mutex<Option<Arc<ClientRoom>>>,
     /// La partie prévue par la room : lancée à la fin du compte à rebours.
     prevue: Mutex<Option<(String, Session)>>,
+    /// Vrai pendant une installation : une seule à la fois.
+    installation: std::sync::atomic::AtomicBool,
 }
 
 fn lire_json<T: for<'a> Deserialize<'a> + Default>(f: &Path) -> T {
@@ -159,6 +161,7 @@ impl Retro {
             serveur: Mutex::new(None),
             client: Mutex::new(None),
             prevue: Mutex::new(None),
+            installation: Default::default(),
         }
     }
 
@@ -445,6 +448,16 @@ impl Retro {
 
     /// Récupère les versions validées et le catalogue, puis installe ce qui manque.
     pub async fn installer_tout(self: Arc<Self>, app: AppHandle) -> Result<Vec<String>, String> {
+        use std::sync::atomic::Ordering;
+        if self.installation.swap(true, Ordering::SeqCst) {
+            return Err("Une installation est déjà en cours : attends qu'elle se termine.".into());
+        }
+        let r = self.clone().installer_tout_sans_verrou(app).await;
+        self.installation.store(false, Ordering::SeqCst);
+        r
+    }
+
+    async fn installer_tout_sans_verrou(self: Arc<Self>, app: AppHandle) -> Result<Vec<String>, String> {
         let canal = self.reglages().canal;
         let texte = match telecharger_texte(&canal.url_versions()).await {
             Err(e) if canal == Canal::Stable && e.contains("404") => {
@@ -469,6 +482,17 @@ impl Retro {
         }
         let ou = self.emplacements();
         let mut actions = validees.a_faire(&Etat::charger(&ou).versions());
+        // Un composant à la bonne version mais abîmé est réinstallé.
+        for nom in installation::a_reparer(&ou) {
+            let deja = actions.iter().any(|a| matches!(a, Action::Installer { nom: n, .. } | Action::MettreAJour { nom: n, .. } if *n == nom));
+            if let (false, Some(composant)) = (deja, validees.composants.get(&nom)) {
+                actions.push(Action::Installer { nom, composant: composant.clone() });
+            }
+        }
+        // Les cores vont dans le dossier de RetroArch : RetroArch d'abord.
+        actions.sort_by_key(|a| match a {
+            Action::Installer { nom, .. } | Action::MettreAJour { nom, .. } => (nom != "retroarch", nom.clone()),
+        });
         // Avec un RetroArch personnel, on n'installe pas celui de SQUAD.
         if self.reglages().retroarch.is_some() {
             actions.retain(|a| !matches!(a, Action::Installer { nom, .. } | Action::MettreAJour { nom, .. } if nom == "retroarch"));
