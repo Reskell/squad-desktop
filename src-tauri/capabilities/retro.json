@@ -1,0 +1,14 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "retro",
+  "description": "Droits de la fenêtre SQUAD//RETRO (page locale de l'app) : choisir le dossier des jeux et RetroArch, scanner, lancer un jeu trouvé par le scan",
+  "windows": ["retro"],
+  "permissions": [
+    "core:default",
+    "allow-retro-reglages",
+    "allow-retro-choisir-dossier",
+    "allow-retro-choisir-retroarch",
+    "allow-retro-bibliotheque",
+    "allow-retro-lancer"
+  ]
+}

@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8" />
+<title>SQUAD//RETRO</title>
+<!-- SQUAD//RETRO, vague 1 : la page de test locale de l'app. Elle choisit le
+     dossier des jeux et RetroArch, scanne la bibliothèque et lance un jeu.
+     La vraie section viendra dans le site, à côté de PLAY. -->
+<style>
+  :root { --fond:#0a0d13; --carte:#131826; --bord:#232a3d; --texte:#e7ecf6; --gris:#8b93a7; --accent:#7c5cff; --ok:#3ecf8e; --erreur:#ff6b6b; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--fond); color:var(--texte); font:14px/1.45 system-ui, "Segoe UI", sans-serif; display:grid; grid-template-columns:220px 1fr; height:100vh; }
+  aside { border-right:1px solid var(--bord); padding:20px 12px; display:flex; flex-direction:column; gap:4px; }
+  h1 { font-size:18px; letter-spacing:.08em; margin:0 8px 16px; }
+  .console { background:none; border:0; color:var(--texte); text-align:left; padding:9px 12px; border-radius:8px; cursor:pointer; font:inherit; display:flex; justify-content:space-between; }
+  .console:hover { background:var(--carte); }
+  .console.active { background:var(--accent); }
+  .console small { color:var(--gris); }
+  .console.active small { color:#fff; }
+  main { display:flex; flex-direction:column; min-width:0; }
+  header { padding:16px 24px; border-bottom:1px solid var(--bord); display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+  .reglage { display:flex; flex-direction:column; gap:2px; min-width:0; }
+  .reglage span { color:var(--gris); font-size:12px; }
+  .reglage code { font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:300px; }
+  button.action { background:var(--carte); border:1px solid var(--bord); color:var(--texte); padding:8px 14px; border-radius:8px; cursor:pointer; font:inherit; }
+  button.action:hover { border-color:var(--accent); }
+  button.jouer { background:var(--accent); border:0; color:#fff; padding:8px 18px; border-radius:8px; cursor:pointer; font:inherit; font-weight:600; }
+  #message { padding:10px 24px; min-height:20px; color:var(--gris); }
+  #message.erreur { color:var(--erreur); }
+  #message.ok { color:var(--ok); }
+  #liste { overflow:auto; padding:8px 24px 24px; display:grid; gap:8px; }
+  .jeu { background:var(--carte); border:1px solid var(--bord); border-radius:10px; padding:12px 16px; display:flex; align-items:center; gap:16px; }
+  .jeu .titre { font-weight:600; flex:1; min-width:0; }
+  .jeu .titre small { display:block; color:var(--gris); font-weight:400; font-size:12px; }
+  select { background:var(--fond); color:var(--texte); border:1px solid var(--bord); border-radius:6px; padding:6px; font:inherit; max-width:280px; }
+  .vide { color:var(--gris); padding:40px 0; text-align:center; }
+</style>
+</head>
+<body>
+<aside>
+  <h1>SQUAD//RETRO</h1>
+  <div id="consoles"></div>
+</aside>
+<main>
+  <header>
+    <div class="reglage"><span>Dossier des jeux</span><code id="dossier">non choisi</code></div>
+    <button class="action" id="choisirDossier">Choisir…</button>
+    <div class="reglage"><span>RetroArch</span><code id="retroarch">non choisi</code></div>
+    <button class="action" id="choisirRetroarch">Choisir…</button>
+    <button class="action" id="scanner" style="margin-left:auto">Rescanner</button>
+  </header>
+  <div id="message"></div>
+  <div id="liste"></div>
+</main>
+<script>
+  const invoke = window.__TAURI__.core.invoke;
+  const CONSOLES = [
+    ["nes", "NES"], ["snes", "Super Nintendo"], ["n64", "Nintendo 64"],
+    ["ps1", "PlayStation"], ["gamecube", "GameCube"], ["wii", "Wii"],
+  ];
+  const REGIONS = { france: "FR", europe: "EU", usa: "US", japon: "JP", monde: "Monde", autre: "?" };
+  let fiches = [];
+  let consoleActive = "nes";
+
+  const el = (id) => document.getElementById(id);
+  function dire(texte, genre = "") {
+    el("message").textContent = texte;
+    el("message").className = genre;
+  }
+
+  function afficherConsoles() {
+    el("consoles").replaceChildren(...CONSOLES.map(([id, nom]) => {
+      const b = document.createElement("button");
+      b.className = "console" + (id === consoleActive ? " active" : "");
+      const n = fiches.filter((f) => f.console === id).length;
+      b.innerHTML = `<span></span><small>${n}</small>`;
+      b.firstChild.textContent = nom;
+      b.onclick = () => { consoleActive = id; afficherConsoles(); afficherJeux(); };
+      return b;
+    }));
+  }
+
+  function afficherJeux() {
+    const jeux = fiches.filter((f) => f.console === consoleActive);
+    if (!jeux.length) {
+      el("liste").innerHTML = `<div class="vide">Aucun jeu ici. Range tes propres copies dans le sous-dossier « ${consoleActive} » du dossier des jeux, puis rescanne.</div>`;
+      return;
+    }
+    el("liste").replaceChildren(...jeux.map((fiche) => {
+      const ligne = document.createElement("div");
+      ligne.className = "jeu";
+      const titre = document.createElement("div");
+      titre.className = "titre";
+      titre.textContent = fiche.titre;
+      const detail = document.createElement("small");
+      const v0 = fiche.variantes[0];
+      detail.textContent = (v0.reconnu ? "Reconnu par la base · " : "Reconnu par son nom · ") +
+        fiche.variantes.length + (fiche.variantes.length > 1 ? " versions" : " version");
+      titre.append(detail);
+
+      const choix = document.createElement("select");
+      fiche.variantes.forEach((v) => {
+        const o = document.createElement("option");
+        o.value = v.chemin;
+        o.textContent = `${REGIONS[v.region] || "?"} · ${v.nom}`;
+        choix.append(o);
+      });
+
+      const jouer = document.createElement("button");
+      jouer.className = "jouer";
+      jouer.textContent = "Jouer";
+      jouer.onclick = async () => {
+        dire(`Lancement de ${fiche.titre}…`);
+        try {
+          await invoke("retro_lancer", { chemin: choix.value });
+          dire(`${fiche.titre} est lancé. Échap pour quitter le jeu.`, "ok");
+        } catch (e) { dire(String(e), "erreur"); }
+      };
+      ligne.append(titre, choix, jouer);
+      return ligne;
+    }));
+  }
+
+  async function scanner() {
+    dire("Scan en cours…");
+    try {
+      fiches = await invoke("retro_bibliotheque");
+      dire(`${fiches.length} jeu${fiches.length > 1 ? "x" : ""} trouvé${fiches.length > 1 ? "s" : ""}.`, "ok");
+    } catch (e) { fiches = []; dire(String(e), "erreur"); }
+    afficherConsoles();
+    afficherJeux();
+  }
+
+  async function chargerReglages() {
+    const r = await invoke("retro_reglages");
+    el("dossier").textContent = r.dossier_jeux || "non choisi";
+    el("dossier").title = r.dossier_jeux || "";
+    el("retroarch").textContent = r.retroarch || "non choisi";
+    el("retroarch").title = r.retroarch || "";
+    return r;
+  }
+
+  el("choisirDossier").onclick = async () => {
+    if (await invoke("retro_choisir_dossier")) { await chargerReglages(); await scanner(); }
+  };
+  el("choisirRetroarch").onclick = async () => {
+    if (await invoke("retro_choisir_retroarch")) await chargerReglages();
+  };
+  el("scanner").onclick = scanner;
+
+  (async () => {
+    afficherConsoles();
+    const r = await chargerReglages();
+    if (r.dossier_jeux) await scanner();
+    else dire("Commence par choisir le dossier de tes jeux et retroarch.exe.");
+  })();
+</script>
+</body>
+</html>

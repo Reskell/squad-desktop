@@ -26,6 +26,8 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 sha2 = "0.10"
 zip = { version = "4", default-features = false, features = ["deflate"] }
 tauri-plugin-global-shortcut = "2"
+# SQUAD//RETRO : le moteur du launcher rétro (bibliothèque, lancement des émulateurs).
+squad_retro = { git = "https://github.com/Reskell/Squad-retro", rev = "e193ef444d674d9c9eb0bef2ed2cf7c318f57e6c" }
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.56"

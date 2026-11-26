@@ -17,6 +17,8 @@
 //!   le dossier d'un jeu (mods.rs) ;
 //! - une icône dans la barre des tâches, le lancement avec Windows, et les
 //!   liens externes renvoyés vers le navigateur (liens.rs) ;
+//! - SQUAD//RETRO (retro.rs) : les jeux rétro de la personne, lancés avec
+//!   RetroArch caché (vague 1 : une fenêtre de test, ouverte depuis l'icône) ;
 //! - les mises à jour, téléchargées et installées toutes seules depuis les
 //!   versions publiées sur GitHub.
 //!
@@ -30,6 +32,7 @@ mod lol;
 mod mods;
 mod parties;
 mod reglages;
+mod retro;
 mod serveurs;
 mod steam;
 
@@ -274,6 +277,72 @@ async fn mod_desinstaller(app: AppHandle, id: String) -> Result<(), String> {
 #[tauri::command]
 fn mods_installes(mods: tauri::State<'_, mods::Mods>) -> Vec<mods::Visible> {
     mods.visibles()
+}
+
+/// SQUAD//RETRO : les réglages (dossier des jeux, RetroArch).
+#[tauri::command]
+fn retro_reglages(retro: tauri::State<'_, retro::Retro>) -> retro::ReglagesRetro {
+    retro.reglages()
+}
+
+/// Ouvre la fenêtre de Windows pour choisir le dossier des jeux rétro.
+#[tauri::command]
+async fn retro_choisir_dossier(app: AppHandle) -> Option<String> {
+    let dossier = app
+        .dialog()
+        .file()
+        .set_title("Le dossier de tes jeux rétro (avec nes, snes…)")
+        .blocking_pick_folder()?;
+    let chemin = dossier.into_path().ok()?;
+    app.state::<retro::Retro>().choisir_dossier_jeux(&chemin);
+    Some(chemin.to_string_lossy().into_owned())
+}
+
+/// Ouvre la fenêtre de Windows pour choisir retroarch.exe.
+#[tauri::command]
+async fn retro_choisir_retroarch(app: AppHandle) -> Option<String> {
+    let fichier = app
+        .dialog()
+        .file()
+        .set_title("RetroArch (retroarch.exe)")
+        .add_filter("Programme", &["exe"])
+        .blocking_pick_file()?;
+    let chemin = fichier.into_path().ok()?;
+    app.state::<retro::Retro>().choisir_retroarch(&chemin);
+    Some(chemin.to_string_lossy().into_owned())
+}
+
+/// Scanne le dossier des jeux rétro : une fiche par jeu.
+#[tauri::command]
+async fn retro_bibliotheque(app: AppHandle) -> Result<Vec<retro::FicheVisible>, String> {
+    tauri::async_runtime::spawn_blocking(move || app.state::<retro::Retro>().scanner())
+        .await
+        .map_err(|_| "Le scan a planté.".to_string())?
+}
+
+/// Lance une version d'un jeu rétro trouvée par le dernier scan.
+#[tauri::command]
+fn retro_lancer(retro: tauri::State<'_, retro::Retro>, chemin: String) -> Result<(), String> {
+    retro.lancer(&chemin)
+}
+
+/// La fenêtre SQUAD//RETRO de la vague 1 : une page locale de test (la
+/// vraie section viendra dans le site, à côté de PLAY).
+const RETRO: &str = "retro";
+
+fn ouvrir_retro(app: &AppHandle) -> tauri::Result<()> {
+    if let Some(fenetre) = app.get_webview_window(RETRO) {
+        let _ = fenetre.show();
+        let _ = fenetre.set_focus();
+        return Ok(());
+    }
+    WebviewWindowBuilder::new(app, RETRO, WebviewUrl::App("retro.html".into()))
+        .title("SQUAD//RETRO")
+        .inner_size(1100.0, 720.0)
+        .min_inner_size(760.0, 480.0)
+        .center()
+        .build()?;
+    Ok(())
 }
 
 /// La boucle qui regarde quels jeux tournent, dans son propre fil pour ne
@@ -701,6 +770,7 @@ pub fn run() {
             app.manage(hors_steam::HorsSteam::charger(donnees.as_ref().map(|d| d.join("hors-steam.json"))));
             app.manage(lol::Lol::nouveau());
             app.manage(mods::Mods::charger(donnees.clone()));
+            app.manage(retro::Retro::charger(donnees.clone()));
             if SEUL {
                 // Au démarrage de Windows, il attend LoL sans rien ouvrir.
                 if !lance_par_windows {
@@ -730,6 +800,7 @@ pub fn run() {
                 None::<&str>,
             )?;
             let compagnon = MenuItem::with_id(app, "compagnon", "Ouvrir le compagnon LoL", true, None::<&str>)?;
+            let retro = MenuItem::with_id(app, "retro", "SQUAD//RETRO (test)", true, None::<&str>)?;
             let compagnon_auto = CheckMenuItem::with_id(
                 app,
                 "compagnon_auto",
@@ -763,6 +834,7 @@ pub fn run() {
                     &[
                         &ouvrir,
                         &compagnon,
+                        &retro,
                         &demarrage,
                         &invisible,
                         &compagnon_auto,
@@ -803,6 +875,9 @@ pub fn run() {
                         let _ = app.emit("invisible", etat);
                     }
                     "verifier" => verifier_maintenant(app),
+                    "retro" => {
+                        let _ = ouvrir_retro(app);
+                    }
                     "compagnon" => {
                         let _ = creer_le_compagnon(app);
                     }
@@ -875,7 +950,12 @@ pub fn run() {
             serveur_allumer,
             mod_installer,
             mod_desinstaller,
-            mods_installes
+            mods_installes,
+            retro_reglages,
+            retro_choisir_dossier,
+            retro_choisir_retroarch,
+            retro_bibliotheque,
+            retro_lancer
         ])
         .run(tauri::generate_context!())
         .expect("l'app n'a pas pu démarrer");

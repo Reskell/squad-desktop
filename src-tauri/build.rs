@@ -30,6 +30,11 @@ fn main() {
                 "mod_installer",
                 "mod_desinstaller",
                 "mods_installes",
+                "retro_reglages",
+                "retro_choisir_dossier",
+                "retro_choisir_retroarch",
+                "retro_bibliotheque",
+                "retro_lancer",
             ])),
     )
     .expect("échec de la préparation de la compilation");

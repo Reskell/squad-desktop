@@ -2796,7 +2796,7 @@ checksum = "2896bade328c13f7042a297ea5ac5b0951f6cf989dea5f32c2fd98da398195cb"
 dependencies = [
  "base64 0.23.1",
  "indexmap 2.14.2",
- "quick-xml",
+ "quick-xml 0.42.0",
  "serde",
  "time",
 ]
@@ -2937,6 +2937,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "985e7ec9bb745e6ce6535b544d84d6cd6f7ad8bd711c398938ae983b91a766d9"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "quick-xml"
+version = "0.37.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "331e97a1af0bf59823e6eadffe373d7b27f485be8748f71471c662c1f269b7fb"
+dependencies = [
+ "memchr",
 ]
 
 [[package]]
@@ -3514,6 +3523,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "sha1"
+version = "0.10.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a978451301f4db1d02937a4ab3ccce137717b81826e79b7d49ffe3244a13c3b8"
+dependencies = [
+ "cfg-if",
+ "cpufeatures",
+ "digest",
+]
+
+[[package]]
 name = "sha2"
 version = "0.10.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3659,6 +3679,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "squad_retro",
  "sysinfo",
  "tauri",
  "tauri-build",
@@ -3669,6 +3690,18 @@ dependencies = [
  "tauri-plugin-updater",
  "winreg 0.56.0",
  "zip",
+]
+
+[[package]]
+name = "squad_retro"
+version = "0.1.0"
+source = "git+https://github.com/Reskell/Squad-retro?rev=e193ef444d674d9c9eb0bef2ed2cf7c318f57e6c#e193ef444d674d9c9eb0bef2ed2cf7c318f57e6c"
+dependencies = [
+ "crc32fast",
+ "quick-xml 0.37.5",
+ "serde",
+ "serde_json",
+ "sha1",
 ]
 
 [[package]]
