@@ -446,7 +446,14 @@ impl Retro {
     /// Récupère les versions validées et le catalogue, puis installe ce qui manque.
     pub async fn installer_tout(self: Arc<Self>, app: AppHandle) -> Result<Vec<String>, String> {
         let canal = self.reglages().canal;
-        let texte = telecharger_texte(&canal.url_versions()).await?;
+        let texte = match telecharger_texte(&canal.url_versions()).await {
+            Err(e) if canal == Canal::Stable && e.contains("404") => {
+                return Err("Aucune version n'est encore validée pour tout le monde. \
+                            Passe sur le canal Bêta dans Réglages pour installer la version de test."
+                    .to_string())
+            }
+            r => r?,
+        };
         let validees = Validees::lire(&texte)?;
         if let Ok(t) = telecharger_texte(&Canal::url_catalogue()).await {
             if let Ok(c) = Catalogue::lire(&t) {
