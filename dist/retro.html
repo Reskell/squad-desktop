@@ -760,10 +760,20 @@ let animPlaza = null;
 function arreterPlaza() { if (animPlaza) cancelAnimationFrame(animPlaza); animPlaza = null; }
 async function vuePlaza(v) {
   const croises = await invoke("retro_croises").catch(() => []);
+  // La bande en ligne, d'après le site SQUAD//LOG (vide hors de l'app SQUAD).
+  const squad = await invoke("retro_squad_en_ligne").catch(() => []);
   const enRoom = new Set((room?.places || []).map((p) => p.pseudo.toLowerCase()));
   const habitants = [{ pseudo: monPseudo(), avatar: monAvatar(), moi: true, texte: room ? `dans la room ${room.titre}` : "toi" }];
   for (const p of room?.places || []) if (p.pseudo.toLowerCase() !== monPseudo().toLowerCase()) habitants.push({ pseudo: p.pseudo, avatar: p.avatar || avatarDe(p.pseudo), present: true, texte: `dans ta room · ${p.pret ? "prêt" : "pas prêt"}` });
-  for (const c of croises.slice(0, 14)) if (!enRoom.has(c.pseudo.toLowerCase())) habitants.push({ pseudo: c.pseudo, avatar: c.avatar, absent: true, texte: `vu ${ilYa(c.vu)}${c.jeu ? " · " + c.jeu : ""}`, croise: c });
+  const deja = new Set([...enRoom, monPseudo().toLowerCase()]);
+  for (const p of squad) {
+    if (deja.has(p.pseudo.toLowerCase())) continue;
+    deja.add(p.pseudo.toLowerCase());
+    const connu = croises.find((c) => c.pseudo.toLowerCase() === p.pseudo.toLowerCase());
+    habitants.push({ pseudo: p.pseudo, avatar: connu?.avatar || avatarDe(p.pseudo), present: true, pote: p,
+      texte: p.room_lien ? `room ouverte : ${p.room_titre} (${p.room_joueurs}/${p.room_places})` : p.titre ? `joue à ${p.titre}` : "en ligne sur SQUAD" });
+  }
+  for (const c of croises.slice(0, 14)) if (!deja.has(c.pseudo.toLowerCase())) habitants.push({ pseudo: c.pseudo, avatar: c.avatar, absent: true, texte: `vu ${ilYa(c.vu)}${c.jeu ? " · " + c.jeu : ""}`, croise: c });
   v.append(el("h2", {}, "Plaza"));
   const scene = el("div", { class: "plaza" }, el("div", { class: "bulle-fond", style: "width:180px;height:180px;left:8%;top:-40px" }), el("div", { class: "bulle-fond", style: "width:120px;height:120px;right:12%;top:30px" }), el("div", { class: "sol" }));
   const infos = el("div", { class: "carte", style: "margin-top:12px" }, el("small", {}, "Clique sur quelqu'un."));
@@ -778,11 +788,12 @@ async function vuePlaza(v) {
     infos.replaceChildren(el("div", { style: "display:flex;gap:14px;align-items:center" }, avatar(h.avatar, 56),
       el("div", { style: "flex:1" }, el("b", {}, h.pseudo), el("small", {}, h.texte)),
       h.moi ? el("button", { class: "b", onclick: () => ecranCreateur(compteActif(), false) }, "Modifier mon avatar")
+        : h.pote?.room_lien ? el("button", { class: "p", onclick: () => rejoindreLien(h.pote.room_lien) }, "Rejoindre sa room")
         : h.croise ? el("button", { class: "p", onclick: () => { if (h.croise.jeu) { const f = fiches.find((x) => x.titre.toLowerCase() === h.croise.jeu.toLowerCase()); if (f) roomJeu = f.variantes[0].chemin; } aller("room"); dire(`Ouvre la room puis envoie le lien à ${h.pseudo}.`); } }, "L'inviter à jouer")
         : el("button", { class: "b", onclick: () => aller("room") }, "Voir la room")));
   }
   v.append(scene, infos,
-    el("p", { style: "color:var(--gris);font-size:12px" }, "La plaza montre toi, les joueurs de ta room et les potes croisés en ligne. La présence en direct des potes connectés à SQUAD//LOG viendra avec la connexion au compte SQUAD."));
+    el("p", { style: "color:var(--gris);font-size:12px" }, squad.length ? "La plaza montre toi, ta room, la bande connectée à SQUAD//LOG (en direct) et les potes croisés en ligne." : "La plaza montre toi, ta room et les potes croisés en ligne. Ouvre SQUAD//RETRO depuis l'app SQUAD connectée pour voir la bande en direct."));
   const bouger = () => {
     for (const e of etres) {
       if (e.pause > 0) { e.pause--; e.b.classList.remove("bouge"); }
@@ -879,7 +890,11 @@ async function terminerAssistant() {
 }
 
 // ---------- Room et netplay ----------
-let roomJeu = null, lienRoom = null, compte = null;
+let roomJeu = null, lienRoom = null, compte = null, lienAttendu = null;
+// Une invitation reçue (depuis le site, la plaza…) : on ouvre « Jouer en ligne » dessus.
+function rejoindreLien(lien) { fermerVoile(true); lienAttendu = lien; aller("room"); dire("Invitation reçue : choisis ta version du jeu puis clique sur Rejoindre.", "ok"); }
+listen("retro-invitation", ({ payload }) => rejoindreLien(payload));
+listen("retro-squad", () => { if (vue === "plaza") dessiner(); });
 function vueRoom(v) {
   v.append(el("h2", {}, "Jouer en ligne"));
   if (room) return dessinerRoom(v);
@@ -900,7 +915,7 @@ function vueRoom(v) {
       lienRoom = await invoke("retro_heberger", { chemin: roomJeu, max: Number(max.value), motDePasse: mdp.value, adresse: adresse.value.trim() || "127.0.0.1" });
       await navigator.clipboard.writeText(lienRoom).catch(() => {});
     }, "Room ouverte : le lien d'invitation est copié, colle-le sur Discord.").catch(() => {}) }, "Ouvrir la room"))));
-  const lien = el("input", { placeholder: "Colle le lien squadretro://…", style: "flex:1" });
+  const lien = el("input", { placeholder: "Colle le lien squadretro://…", style: "flex:1", value: lienAttendu || "" });
   const mdp2 = el("input", { placeholder: "Mot de passe (si demandé)" });
   const info = el("small", { style: "color:var(--gris)" });
   lien.addEventListener("change", async () => {
@@ -913,6 +928,7 @@ function vueRoom(v) {
       info.textContent += ms != null ? ` · ping ${ms} ms : ${q}` : ` · ${q}`;
     } catch (e) { info.textContent = String(e); }
   });
+  if (lienAttendu) { lienAttendu = null; setTimeout(() => lien.dispatchEvent(new Event("change")), 0); }
   v.append(el("div", { class: "carte", style: "margin-top:12px" }, el("b", {}, "Rejoindre une partie"),
     el("div", { class: "ligne" }, lien), info,
     el("div", { class: "ligne" }, el("label", {}, "Ma version du jeu"), choixJeu()),

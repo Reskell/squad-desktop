@@ -117,8 +117,67 @@ fn parties_envoyees(carnet: tauri::State<'_, parties::Parties>, ids: Vec<String>
 /// Les jeux qui tournent en ce moment : le site les annonce à la bande
 /// (« en jeu »), sauf en mode invisible.
 #[tauri::command]
-fn parties_en_cours(carnet: tauri::State<'_, parties::Parties>) -> Vec<parties::Partie> {
-    carnet.en_cours()
+fn parties_en_cours(carnet: tauri::State<'_, parties::Parties>, retro: EtatRetro<'_>) -> Vec<parties::Partie> {
+    let mut liste = carnet.en_cours();
+    // Un jeu lancé depuis SQUAD//RETRO compte aussi : la bande voit « en jeu ».
+    if let Some((console, titre, debut)) = retro.en_cours() {
+        liste.push(parties::Partie {
+            id: format!("retro-{debut}"),
+            appid: None,
+            game_id: None,
+            title: format!("{titre} ({})", console.nom()),
+            started_at: debut as i64,
+            ended_at: parties::maintenant_ms(),
+        });
+    }
+    liste
+}
+
+/// Les parties SQUAD//RETRO finies, que le site enregistre (retro_sessions).
+#[tauri::command]
+fn retro_parties_a_envoyer(retro: EtatRetro<'_>) -> Vec<retro::PartieRetro> {
+    retro.parties_a_envoyer()
+}
+
+#[tauri::command]
+fn retro_parties_envoyees(retro: EtatRetro<'_>, ids: Vec<String>) {
+    retro.parties_envoyees(&ids)
+}
+
+/// La room SQUAD//RETRO ouverte sur ce PC (le site l'annonce à la bande).
+#[tauri::command]
+fn retro_room_publique(retro: EtatRetro<'_>) -> Option<retro::RoomPublique> {
+    retro.room_publique()
+}
+
+/// Le site transmet qui est en ligne dans la bande (pour la plaza) et le
+/// pseudo du compte SQUAD connecté (qui devient un profil SQUAD//RETRO).
+#[tauri::command]
+fn retro_squad(app: AppHandle, retro: EtatRetro<'_>, moi: Option<String>, potes: Vec<retro::PoteEnLigne>) {
+    retro.noter_squad(moi, potes);
+    let _ = app.emit("retro-squad", ());
+}
+
+/// Lire la bande depuis la fenêtre SQUAD//RETRO.
+#[tauri::command]
+fn retro_squad_en_ligne(retro: EtatRetro<'_>) -> Vec<retro::PoteEnLigne> {
+    retro.squad()
+}
+
+/// « Rejoindre » une room depuis le site : ouvre SQUAD//RETRO sur l'invitation.
+#[tauri::command]
+fn retro_ouvrir_invitation(app: AppHandle, lien: String) -> Result<(), String> {
+    if !lien.starts_with(squad_retro::netplay::SCHEMA) {
+        return Err("Ce lien n'est pas une invitation SQUAD//RETRO.".into());
+    }
+    ouvrir_retro(&app).map_err(|e| e.to_string())?;
+    // La fenêtre vient peut-être de s'ouvrir : on lui laisse le temps d'écouter.
+    let app2 = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        let _ = app2.emit("retro-invitation", lien);
+    });
+    Ok(())
 }
 
 /// Le mode invisible est-il coché dans le menu de l'icône ?
@@ -1268,6 +1327,12 @@ pub fn run() {
             retro_choisir_compte,
             retro_choisir_theme,
             retro_croises,
+            retro_parties_a_envoyer,
+            retro_parties_envoyees,
+            retro_room_publique,
+            retro_squad,
+            retro_ouvrir_invitation,
+            retro_squad_en_ligne,
             retro_enregistrer_fiche,
             retro_options_mod,
             retro_avant_lancement,

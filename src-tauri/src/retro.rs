@@ -136,6 +136,40 @@ impl MaFiche {
     }
 }
 
+/// Une partie rétro terminée, en attente d'envoi au site SQUAD//LOG.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PartieRetro {
+    pub id: String,
+    pub console: Console,
+    pub titre: String,
+    pub started_at: u64,
+    pub ended_at: u64,
+}
+
+/// La room ouverte sur ce PC, telle que le site l'annonce à la bande.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct RoomPublique {
+    pub console: Console,
+    pub titre: String,
+    pub lien: String,
+    pub joueurs: usize,
+    pub places: usize,
+    pub privee: bool,
+}
+
+/// Un pote de la bande vu par le site : ce qu'il fait, et sa room s'il en a une.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct PoteEnLigne {
+    pub pseudo: String,
+    /// Le jeu en cours (n'importe lequel, rétro ou non).
+    pub titre: Option<String>,
+    pub room_titre: Option<String>,
+    pub room_lien: Option<String>,
+    pub room_joueurs: Option<usize>,
+    pub room_places: Option<usize>,
+}
+
 /// Le bilan du profil actif.
 #[derive(Serialize, Clone, Default)]
 pub struct Stats {
@@ -202,6 +236,12 @@ pub struct Retro {
     croises: Mutex<Vec<Croise>>,
     /// Les fiches du profil actif, par « console/titre ».
     fiches_perso: Mutex<BTreeMap<String, MaFiche>>,
+    /// Le jeu rétro qui tourne : (console, titre, début en ms).
+    en_cours: Mutex<Option<(Console, String, u64)>>,
+    /// Le lien et le dernier état de la room ouverte ici (hôte).
+    room_ouverte: Mutex<Option<(String, Room)>>,
+    /// Les potes de la bande en ligne, d'après le site.
+    squad: Mutex<Vec<PoteEnLigne>>,
 }
 
 fn cle_jeu(console: Console, titre: &str) -> String {
@@ -276,6 +316,9 @@ impl Retro {
             comptes: Mutex::new(comptes),
             croises: Mutex::new(croises),
             fiches_perso: Mutex::new(BTreeMap::new()),
+            en_cours: Mutex::new(None),
+            room_ouverte: Mutex::new(None),
+            squad: Mutex::new(Vec::new()),
         }
     }
 
@@ -605,18 +648,26 @@ impl Retro {
             duree_s: 0,
         });
         self.ecrire_historique();
+        *self.en_cours.lock().unwrap() = Some((console, titre.clone(), debut));
         if let Some(app) = &app {
             let _ = app.emit("retro-partie", serde_json::json!({ "titre": titre, "en_cours": true }));
+            // Le site annonce « en jeu » à la bande.
+            let _ = app.emit("en-cours", ());
         }
         // Un fil attend la fin de la partie pour noter le temps joué.
         let moi = self.clone();
         let chemin_partie = variante.chemin.clone();
         std::thread::spawn(move || {
             let _ = enfant.wait();
-            moi.historique.lock().unwrap().terminer(&chemin_partie, room_reseau::maintenant_ms());
+            let fin = room_reseau::maintenant_ms();
+            moi.historique.lock().unwrap().terminer(&chemin_partie, fin);
             moi.ecrire_historique();
+            *moi.en_cours.lock().unwrap() = None;
+            moi.noter_a_envoyer(PartieRetro { id: format!("retro-{debut}"), console, titre: titre.clone(), started_at: debut, ended_at: fin });
             if let Some(app) = app {
                 let _ = app.emit("retro-partie", serde_json::json!({ "titre": titre, "en_cours": false }));
+                let _ = app.emit("en-cours", ());
+                let _ = app.emit("parties", ());
             }
         });
         Ok(())
@@ -666,6 +717,73 @@ impl Retro {
             fs::write(&cfg, t)?;
         }
         Ok(())
+    }
+
+    // ----- Lien avec le site SQUAD//LOG -----
+
+    /// Garde une partie finie (au moins une minute) pour le site.
+    fn noter_a_envoyer(&self, p: PartieRetro) {
+        if p.ended_at.saturating_sub(p.started_at) < 60_000 {
+            return;
+        }
+        let f = self.donnees.join("a-envoyer.json");
+        let mut liste: Vec<PartieRetro> = lire_json(&f);
+        liste.push(p);
+        let trop = liste.len().saturating_sub(500);
+        liste.drain(..trop);
+        ecrire_json(&f, &liste);
+    }
+
+    /// Les parties rétro que le site doit enregistrer.
+    pub fn parties_a_envoyer(&self) -> Vec<PartieRetro> {
+        lire_json(&self.donnees.join("a-envoyer.json"))
+    }
+
+    /// Le site a enregistré ces parties : on les oublie.
+    pub fn parties_envoyees(&self, ids: &[String]) {
+        let f = self.donnees.join("a-envoyer.json");
+        let mut liste: Vec<PartieRetro> = lire_json(&f);
+        liste.retain(|p| !ids.contains(&p.id));
+        ecrire_json(&f, &liste);
+    }
+
+    /// Le jeu rétro en cours, pour l'annonce « en jeu » du site.
+    pub fn en_cours(&self) -> Option<(Console, String, u64)> {
+        self.en_cours.lock().unwrap().clone()
+    }
+
+    /// La room ouverte ici, si on est l'hôte et qu'elle attend des joueurs.
+    pub fn room_publique(&self) -> Option<RoomPublique> {
+        let (lien, room) = self.room_ouverte.lock().unwrap().clone()?;
+        Some(RoomPublique { console: room.console, titre: room.titre, lien, joueurs: room.places.len(), places: room.max, privee: room.privee })
+    }
+
+    /// Ce que le site sait de la bande : qui est en ligne, à quoi il joue,
+    /// et les rooms ouvertes. Le compte SQUAD devient aussi un profil ici
+    /// (créé au besoin, et actif si aucun profil ne l'est).
+    pub fn noter_squad(&self, moi: Option<String>, potes: Vec<PoteEnLigne>) {
+        let potes: Vec<PoteEnLigne> = potes
+            .into_iter()
+            .filter(|p| p.room_lien.as_deref().map(|l| l.starts_with(netplay::SCHEMA)).unwrap_or(true))
+            .take(50)
+            .collect();
+        *self.squad.lock().unwrap() = potes;
+        let Some(pseudo) = moi.map(|p| Compte::pseudo_propre(&p)).filter(|p| !p.is_empty()) else { return };
+        let existe = self.comptes.lock().unwrap().liste.iter().find(|c| c.pseudo.eq_ignore_ascii_case(&pseudo)).map(|c| c.id.clone());
+        let id = match existe {
+            Some(id) => id,
+            None => match self.enregistrer_compte(Compte { id: String::new(), pseudo: pseudo.clone(), avatar: Avatar::depuis(&pseudo) }) {
+                // Le nouveau profil devient actif tout seul.
+                Ok(_) | Err(_) => return,
+            },
+        };
+        if self.comptes.lock().unwrap().actif.is_none() {
+            let _ = self.choisir_compte(Some(&id));
+        }
+    }
+
+    pub fn squad(&self) -> Vec<PoteEnLigne> {
+        self.squad.lock().unwrap().clone()
     }
 
     // ----- Fiches perso, stats -----
@@ -994,6 +1112,7 @@ impl Retro {
         };
         let id = format!("{:x}", room_reseau::maintenant_ms());
         let room = Room::nouvelle(&id, console, &titre, place, max, mot_de_passe.is_some());
+        let room_initiale = room.clone();
         let session = Session { role: Role::Heberger { port: port_jeu }, pseudo: self.pseudo(), mot_de_passe: mot_de_passe.clone(), relais: None, port_manette: Some(1) };
         *self.prevue.lock().unwrap() = Some((chemin.to_string(), session));
         let moi = self.clone();
@@ -1001,9 +1120,12 @@ impl Retro {
         let serveur = ServeurRoom::ouvrir(room, room_reseau::PORT_ROOM, mot_de_passe, move |room, dans| {
             moi.sur_room(&app2, room, dans);
         })?;
+        *self.serveur.lock().unwrap() = Some(serveur.clone());
+        let lien = Invitation { room: id, console, titre, adresse, port: room_reseau::PORT_ROOM, privee: self.prevue_privee() }.lien();
+        *self.room_ouverte.lock().unwrap() = Some((lien.clone(), room_initiale));
         serveur.diffuser();
-        *self.serveur.lock().unwrap() = Some(serveur);
-        Ok(Invitation { room: id, console, titre, adresse, port: room_reseau::PORT_ROOM, privee: self.prevue_privee() }.lien())
+        let _ = app.emit("retro-room-ouverte", ());
+        Ok(lien)
     }
 
     fn prevue_privee(&self) -> bool {
@@ -1045,6 +1167,12 @@ impl Retro {
     /// lance chez chacun à la fin du compte à rebours.
     fn sur_room(self: &Arc<Self>, app: &AppHandle, room: &Room, dans_ms: Option<u64>) {
         self.noter_croises(room);
+        if room.hote == self.pseudo() && self.serveur.lock().unwrap().is_some() {
+            let mut ouverte = self.room_ouverte.lock().unwrap();
+            if let Some((_, r)) = ouverte.as_mut() {
+                *r = room.clone();
+            }
+        }
         // Le port manette choisi dans le salon part avec la session prévue.
         let moi_pseudo = self.pseudo();
         if let Some((_, session)) = self.prevue.lock().unwrap().as_mut() {
@@ -1130,6 +1258,7 @@ impl Retro {
     }
 
     pub fn quitter_room(&self) {
+        *self.room_ouverte.lock().unwrap() = None;
         if let Some(s) = self.serveur.lock().unwrap().take() {
             s.fermer();
         }
@@ -1384,6 +1513,29 @@ mod tests {
         assert_eq!(retro.stats().favoris, 0);
         let relu = Retro::charger(Some(dir.clone()));
         assert_eq!(relu.stats().favoris, 0);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn lien_avec_le_site() {
+        let dir = std::env::temp_dir().join(format!("squad-retro-site-{}", std::process::id()));
+        let retro = Retro::charger(Some(dir.clone()));
+        // Le compte SQUAD connecté devient un profil, actif s'il n'y en avait pas.
+        retro.noter_squad(Some("Jerem".into()), vec![
+            PoteEnLigne { pseudo: "Flo".into(), titre: Some("Valheim".into()), ..Default::default() },
+            PoteEnLigne { pseudo: "Pirate".into(), room_lien: Some("https://exemple.com".into()), ..Default::default() },
+        ]);
+        assert_eq!(retro.reglages().pseudo.as_deref(), Some("Jerem"));
+        assert_eq!(retro.squad().len(), 1);
+        retro.noter_squad(Some("Jerem".into()), vec![]);
+        assert_eq!(retro.etat().comptes.liste.len(), 1);
+        // Les parties de moins d'une minute ne partent pas ; les autres attendent le site.
+        retro.noter_a_envoyer(PartieRetro { id: "retro-1".into(), console: Console::Gamecube, titre: "Mario Party 6".into(), started_at: 0, ended_at: 30_000 });
+        retro.noter_a_envoyer(PartieRetro { id: "retro-2".into(), console: Console::Gamecube, titre: "Mario Party 6".into(), started_at: 0, ended_at: 3_600_000 });
+        assert_eq!(retro.parties_a_envoyer().len(), 1);
+        retro.parties_envoyees(&["retro-2".into()]);
+        assert!(retro.parties_a_envoyer().is_empty());
+        assert!(retro.room_publique().is_none());
         let _ = fs::remove_dir_all(&dir);
     }
 }
