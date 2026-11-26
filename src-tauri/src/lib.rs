@@ -348,6 +348,47 @@ fn retro_choisir_theme(retro: EtatRetro<'_>, theme: Option<String>, clair: bool,
 }
 
 #[tauri::command]
+fn retro_enregistrer_fiche(retro: EtatRetro<'_>, console: squad_retro::Console, titre: String, fiche: retro::MaFiche) -> Result<retro::MaFiche, String> {
+    retro.enregistrer_fiche(console, &titre, fiche)
+}
+
+#[tauri::command]
+fn retro_options_mod(retro: EtatRetro<'_>, chemin: String) -> Option<(String, String, Vec<squad_retro::triches::OptionMod>)> {
+    retro.options_mod(&chemin)
+}
+
+#[tauri::command]
+async fn retro_avant_lancement(app: AppHandle, chemin: String) -> Result<Option<String>, String> {
+    let retro = app.state::<std::sync::Arc<retro::Retro>>().inner().clone();
+    retro.mettre_a_jour_avant(chemin).await
+}
+
+#[tauri::command]
+fn retro_stats(retro: EtatRetro<'_>) -> retro::Stats {
+    retro.stats()
+}
+
+#[tauri::command]
+fn retro_dire(retro: EtatRetro<'_>, texte: String) -> Result<(), String> {
+    retro.dire(&texte)
+}
+
+#[tauri::command]
+fn retro_choisir_port(retro: EtatRetro<'_>, port: u8) -> Result<(), String> {
+    retro.choisir_port(port)
+}
+
+#[tauri::command]
+fn retro_exclure(retro: EtatRetro<'_>, pseudo: String) -> Result<(), String> {
+    retro.exclure(&pseudo)
+}
+
+#[tauri::command]
+fn retro_reserver(retro: EtatRetro<'_>, pseudo: String) -> Result<(), String> {
+    retro.reserver(&pseudo)
+}
+
+#[tauri::command]
 fn retro_croises(retro: EtatRetro<'_>) -> Vec<squad_retro::avatar::Croise> {
     retro.croises()
 }
@@ -1226,7 +1267,15 @@ pub fn run() {
             retro_supprimer_compte,
             retro_choisir_compte,
             retro_choisir_theme,
-            retro_croises
+            retro_croises,
+            retro_enregistrer_fiche,
+            retro_options_mod,
+            retro_avant_lancement,
+            retro_stats,
+            retro_dire,
+            retro_choisir_port,
+            retro_exclure,
+            retro_reserver
         ])
         .run(tauri::generate_context!())
         .expect("l'app n'a pas pu démarrer");

@@ -45,6 +45,14 @@
     "allow-retro-supprimer-compte",
     "allow-retro-choisir-compte",
     "allow-retro-choisir-theme",
-    "allow-retro-croises"
+    "allow-retro-croises",
+    "allow-retro-enregistrer-fiche",
+    "allow-retro-options-mod",
+    "allow-retro-avant-lancement",
+    "allow-retro-stats",
+    "allow-retro-dire",
+    "allow-retro-choisir-port",
+    "allow-retro-exclure",
+    "allow-retro-reserver"
   ]
 }

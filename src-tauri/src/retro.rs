@@ -15,6 +15,8 @@ use serde::{Deserialize, Serialize};
 use squad_retro::avatar::{self, Avatar, Compte, Comptes, Croise};
 use squad_retro::bibliotheque::{self, Bibliotheque, Options};
 use squad_retro::jaquettes;
+use squad_retro::profil::ReglagesJeu;
+use squad_retro::triches::{self, Code};
 use squad_retro::catalogue::{Catalogue, Statut};
 use squad_retro::historique::{Historique, Partie};
 use squad_retro::installation::{self, Etat};
@@ -87,6 +89,65 @@ pub struct FicheVisible {
     /// L'adresse de la jaquette (base publique, rien n'est livré avec l'app).
     pub jaquette: String,
     pub variantes: Vec<VarianteVisible>,
+    /// Ce que le profil actif a noté sur ce jeu.
+    pub perso: MaFiche,
+}
+
+/// Ce qu'un profil note sur un jeu : statut, favori, étiquettes, collections,
+/// notes, réglages propres au jeu, codes de triche et options des mods.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MaFiche {
+    /// « a_faire », « en_cours », « fini », « cent » (100 %), ou rien.
+    pub statut: Option<String>,
+    pub favori: bool,
+    pub etiquettes: Vec<String>,
+    pub collections: Vec<String>,
+    pub note: String,
+    pub reglages: ReglagesJeu,
+    pub codes: Vec<Code>,
+    /// Pour chaque mod : option → choix.
+    pub options_mods: BTreeMap<String, BTreeMap<String, usize>>,
+}
+
+impl MaFiche {
+    fn nettoyer(mut self) -> MaFiche {
+        const STATUTS: [&str; 4] = ["a_faire", "en_cours", "fini", "cent"];
+        self.statut = self.statut.filter(|s| STATUTS.contains(&s.as_str()));
+        let propre = |v: Vec<String>| -> Vec<String> {
+            let mut l: Vec<String> = v
+                .iter()
+                .map(|e| e.trim().chars().filter(|c| !c.is_control()).take(30).collect::<String>())
+                .filter(|e| !e.is_empty())
+                .collect();
+            l.sort();
+            l.dedup();
+            l.truncate(20);
+            l
+        };
+        self.etiquettes = propre(self.etiquettes);
+        self.collections = propre(self.collections);
+        self.note = self.note.chars().take(4000).collect();
+        self.codes.truncate(100);
+        self
+    }
+    fn vide(&self) -> bool {
+        *self == MaFiche::default()
+    }
+}
+
+/// Le bilan du profil actif.
+#[derive(Serialize, Clone, Default)]
+pub struct Stats {
+    pub total_s: u64,
+    pub sessions: usize,
+    pub jours: usize,
+    pub plus_longue_s: u64,
+    pub par_console: Vec<(Console, u64)>,
+    pub top: Vec<(Console, String, u64)>,
+    pub finis: usize,
+    pub cent: usize,
+    pub favoris: usize,
 }
 
 #[derive(Serialize, Clone)]
@@ -139,6 +200,12 @@ pub struct Retro {
     installation: std::sync::atomic::AtomicBool,
     comptes: Mutex<Comptes>,
     croises: Mutex<Vec<Croise>>,
+    /// Les fiches du profil actif, par « console/titre ».
+    fiches_perso: Mutex<BTreeMap<String, MaFiche>>,
+}
+
+fn cle_jeu(console: Console, titre: &str) -> String {
+    format!("{}/{}", console.dossier(), titre.to_lowercase())
 }
 
 fn lire_json<T: for<'a> Deserialize<'a> + Default>(f: &Path) -> T {
@@ -156,6 +223,29 @@ fn ecrire_json<T: Serialize>(f: &Path, v: &T) {
 
 impl Retro {
     pub fn charger(donnees_app: Option<PathBuf>) -> Self {
+        let r = Self::charger_sans_profil(donnees_app);
+        r.charger_profil();
+        r
+    }
+
+    /// Le dossier des données propres au profil actif (historique, fiches).
+    fn fichier_profil(&self, nom: &str) -> PathBuf {
+        match &self.comptes.lock().unwrap().actif {
+            Some(id) => self.donnees.join("profils").join(id).join(nom),
+            None => self.donnees.join(nom),
+        }
+    }
+
+    /// Recharge l'historique et les fiches du profil actif. Un nouveau profil
+    /// part de l'historique commun d'avant les profils.
+    fn charger_profil(&self) {
+        let f = self.fichier_profil("historique.json");
+        let f = if f.is_file() { f } else { self.donnees.join("historique.json") };
+        *self.historique.lock().unwrap() = Historique::charger(&f);
+        *self.fiches_perso.lock().unwrap() = lire_json(&self.fichier_profil("fiches.json"));
+    }
+
+    fn charger_sans_profil(donnees_app: Option<PathBuf>) -> Self {
         let fichier = donnees_app.as_ref().map(|d| d.join("retro.json"));
         let reglages = fichier.as_deref().map(lire_json).unwrap_or_default();
         let donnees = donnees_app.unwrap_or_else(|| PathBuf::from(".")).join("retro");
@@ -169,7 +259,7 @@ impl Retro {
         Retro {
             reglages: Mutex::new(reglages),
             fichier,
-            historique: Mutex::new(Historique::charger(&donnees.join("historique.json"))),
+            historique: Mutex::new(Historique::default()),
             catalogue_mods: Mutex::new(lire_json(&donnees.join("mods-catalogue.json"))),
             mods_installes: Mutex::new(Installes::charger(&donnees.join("variantes").join("mods.json"))),
             catalogue: Mutex::new(catalogue),
@@ -185,6 +275,7 @@ impl Retro {
             installation: Default::default(),
             comptes: Mutex::new(comptes),
             croises: Mutex::new(croises),
+            fiches_perso: Mutex::new(BTreeMap::new()),
         }
     }
 
@@ -322,6 +413,7 @@ impl Retro {
         if let Some(p) = pseudo {
             self.modifier(|r| r.pseudo = Some(p));
         }
+        self.charger_profil();
         Ok(())
     }
 
@@ -410,6 +502,7 @@ impl Retro {
                 };
                 jaquettes::jaquette(fiche.console, &v.chemin, &nom)
             },
+            perso: self.fiches_perso.lock().unwrap().get(&cle_jeu(fiche.console, &fiche.titre)).cloned().unwrap_or_default(),
             variantes: fiche
                 .variantes
                 .iter()
@@ -491,9 +584,12 @@ impl Retro {
             .info(console, &titre)
             .map(|i| i.options.clone())
             .unwrap_or_default();
-        let profil = self.profil(console).avec_options(&options);
+        let perso = self.fiches_perso.lock().unwrap().get(&cle_jeu(console, &titre)).cloned().unwrap_or_default();
+        let profil = self.profil(console).avec_options(&options).avec_reglages(&perso.reglages);
         lancement::preparer(console, &ou, &profil, session.as_ref())
             .map_err(|e| format!("Impossible d'écrire la config de {} : {e}", console.nom()))?;
+        self.ecrire_codes(console, &variante.chemin, &perso)
+            .map_err(|e| format!("Impossible d'écrire les codes de {titre} : {e}"))?;
         let commande = lancement::commande(console, &variante.chemin, &ou, session.as_ref());
         let mut enfant = commande
             .vers_process()
@@ -526,8 +622,131 @@ impl Retro {
         Ok(())
     }
 
+    /// Écrit les codes actifs (les miens + les options du mod) là où
+    /// l'émulateur les lit. Sans code actif, le fichier est vidé.
+    fn ecrire_codes(&self, console: Console, fichier: &Path, perso: &MaFiche) -> std::io::Result<()> {
+        let mut codes: Vec<Code> = perso.codes.clone();
+        if let Some(id) = self.mods_installes.lock().unwrap().mod_du_fichier(fichier).map(str::to_string) {
+            if let Some(m) = self.catalogue_mods.lock().unwrap().mods.iter().find(|m| m.id == id) {
+                let choix = perso.options_mods.get(&id).cloned().unwrap_or_default();
+                codes.extend(triches::codes_des_options(&m.options, &choix));
+            }
+        }
+        let ou = self.emplacements();
+        if matches!(console, Console::Gamecube | Console::Wii) {
+            let Some(id) = jaquettes::id_disque(fichier) else { return Ok(()) };
+            let dossier = ou.dossier_dolphin().join("GameSettings");
+            fs::create_dir_all(&dossier)?;
+            let actifs = codes.iter().any(|c| c.actif);
+            let ini = dossier.join(format!("{id}.ini"));
+            if actifs {
+                fs::write(&ini, triches::ini_dolphin(&codes))?;
+                // Les codes ne sont lus que si les triches sont permises.
+                let dolphin = ou.dossier_dolphin().join("Config").join("Dolphin.ini");
+                let mut t = fs::read_to_string(&dolphin).unwrap_or_default();
+                if !t.contains("EnableCheats") {
+                    t = t.replacen("[Core]\n", "[Core]\nEnableCheats = True\n", 1);
+                    fs::write(&dolphin, t)?;
+                }
+            } else if ini.is_file() {
+                fs::write(&ini, "")?;
+            }
+        } else {
+            let core = triches::nom_core_retroarch(console);
+            let dossier = ou.configs().join("cheats").join(core);
+            fs::create_dir_all(&dossier)?;
+            let nom = fichier.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+            fs::write(dossier.join(format!("{nom}.cht")), triches::cht_retroarch(&codes))?;
+            let cfg = squad_retro::retroarch::chemin_config(&ou.configs(), console);
+            let mut t = fs::read_to_string(&cfg).unwrap_or_default();
+            t.push_str(&format!(
+                "cheat_database_path = \"{}\"\napply_cheats_after_load = \"true\"\n",
+                ou.configs().join("cheats").to_string_lossy().replace('\\', "/")
+            ));
+            fs::write(&cfg, t)?;
+        }
+        Ok(())
+    }
+
+    // ----- Fiches perso, stats -----
+
+    /// Enregistre ce que le profil actif note sur un jeu.
+    pub fn enregistrer_fiche(&self, console: Console, titre: &str, fiche: MaFiche) -> Result<MaFiche, String> {
+        let mut fiche = fiche.nettoyer();
+        fiche.codes = fiche.codes.into_iter().map(|c| c.verifier(console)).collect::<Result<_, _>>()?;
+        let mut toutes = self.fiches_perso.lock().unwrap();
+        let cle = cle_jeu(console, titre);
+        if fiche.vide() {
+            toutes.remove(&cle);
+        } else {
+            toutes.insert(cle, fiche.clone());
+        }
+        ecrire_json(&self.fichier_profil("fiches.json"), &*toutes);
+        Ok(fiche)
+    }
+
+    /// Les options du mod dont ce fichier est la variante (vide sinon).
+    pub fn options_mod(&self, chemin: &str) -> Option<(String, String, Vec<triches::OptionMod>)> {
+        let id = self.mods_installes.lock().unwrap().mod_du_fichier(Path::new(chemin))?.to_string();
+        let cat = self.catalogue_mods.lock().unwrap();
+        let m = cat.mods.iter().find(|m| m.id == id)?;
+        Some((id, m.nom.clone(), m.options.clone()))
+    }
+
+    /// Avant de lancer une variante de mod : si une nouvelle version du mod
+    /// existe, on l'installe d'abord (depuis le jeu de base de la bibliothèque).
+    pub async fn mettre_a_jour_avant(self: Arc<Self>, chemin: String) -> Result<Option<String>, String> {
+        let Some(id) = self.mods_installes.lock().unwrap().mod_du_fichier(Path::new(&chemin)).map(str::to_string) else {
+            return Ok(None);
+        };
+        let Some(m) = self.mods_a_jour().into_iter().find(|m| m.id == id) else { return Ok(None) };
+        let base = {
+            let biblio = self.derniere.lock().unwrap();
+            biblio
+                .fiches
+                .iter()
+                .flat_map(|f| f.variantes.iter())
+                .find(|v| v.empreintes.as_ref().map(|e| e.sha1.eq_ignore_ascii_case(&m.base_sha1)).unwrap_or(false))
+                .map(|v| v.chemin.to_string_lossy().into_owned())
+        };
+        let Some(base) = base else {
+            return Err(format!("{} a une nouvelle version, mais le jeu de base n'est plus dans ta bibliothèque.", m.nom));
+        };
+        self.clone().installer_mod(m.id.clone(), base).await?;
+        Ok(Some(format!("{} mis à jour en version {}{}", m.nom, m.version, if m.notes.is_empty() { String::new() } else { format!(" : {}", m.notes) })))
+    }
+
+    /// Le bilan du profil actif.
+    pub fn stats(&self) -> Stats {
+        let h = self.historique.lock().unwrap();
+        let mut par_console: BTreeMap<Console, u64> = BTreeMap::new();
+        let mut par_jeu: BTreeMap<(Console, String), u64> = BTreeMap::new();
+        let mut jours = std::collections::BTreeSet::new();
+        let mut st = Stats::default();
+        for p in &h.parties {
+            st.total_s += p.duree_s;
+            st.sessions += 1;
+            st.plus_longue_s = st.plus_longue_s.max(p.duree_s);
+            *par_console.entry(p.console).or_default() += p.duree_s;
+            *par_jeu.entry((p.console, p.titre.clone())).or_default() += p.duree_s;
+            jours.insert(p.debut_ms / 86_400_000);
+        }
+        st.jours = jours.len();
+        st.par_console = par_console.into_iter().collect();
+        st.par_console.sort_by_key(|b| std::cmp::Reverse(b.1));
+        let mut top: Vec<_> = par_jeu.into_iter().map(|((c, t), s)| (c, t, s)).collect();
+        top.sort_by_key(|b| std::cmp::Reverse(b.2));
+        top.truncate(5);
+        st.top = top;
+        let fiches = self.fiches_perso.lock().unwrap();
+        st.finis = fiches.values().filter(|f| matches!(f.statut.as_deref(), Some("fini") | Some("cent"))).count();
+        st.cent = fiches.values().filter(|f| f.statut.as_deref() == Some("cent")).count();
+        st.favoris = fiches.values().filter(|f| f.favori).count();
+        st
+    }
+
     fn ecrire_historique(&self) {
-        let _ = self.historique.lock().unwrap().ecrire(&self.donnees.join("historique.json"));
+        let _ = self.historique.lock().unwrap().ecrire(&self.fichier_profil("historique.json"));
     }
 
     /// La partie test de l'assistant : le premier jeu de la console, 30 secondes.
@@ -730,7 +949,7 @@ impl Retro {
             }
         }
         *self.profils.lock().unwrap() = lire_json(&self.donnees.join("profils.json"));
-        *self.historique.lock().unwrap() = Historique::charger(&self.donnees.join("historique.json"));
+        self.charger_profil();
         Ok(n)
     }
 
@@ -761,7 +980,7 @@ impl Retro {
         Ok((
             console,
             titre,
-            Place { pseudo: self.pseudo(), pret: false, versions: Etat::charger(&self.emplacements()).versions(), sha1, avatar: Some(self.avatar()) },
+            Place { pseudo: self.pseudo(), pret: false, versions: Etat::charger(&self.emplacements()).versions(), sha1, avatar: Some(self.avatar()), port: None },
         ))
     }
 
@@ -775,7 +994,7 @@ impl Retro {
         };
         let id = format!("{:x}", room_reseau::maintenant_ms());
         let room = Room::nouvelle(&id, console, &titre, place, max, mot_de_passe.is_some());
-        let session = Session { role: Role::Heberger { port: port_jeu }, pseudo: self.pseudo(), mot_de_passe: mot_de_passe.clone(), relais: None };
+        let session = Session { role: Role::Heberger { port: port_jeu }, pseudo: self.pseudo(), mot_de_passe: mot_de_passe.clone(), relais: None, port_manette: Some(1) };
         *self.prevue.lock().unwrap() = Some((chemin.to_string(), session));
         let moi = self.clone();
         let app2 = app.clone();
@@ -808,6 +1027,7 @@ impl Retro {
             pseudo: self.pseudo(),
             mot_de_passe: mot_de_passe.clone(),
             relais: None,
+            port_manette: None,
         };
         *self.prevue.lock().unwrap() = Some((chemin.to_string(), session));
         let moi = self.clone();
@@ -825,6 +1045,13 @@ impl Retro {
     /// lance chez chacun à la fin du compte à rebours.
     fn sur_room(self: &Arc<Self>, app: &AppHandle, room: &Room, dans_ms: Option<u64>) {
         self.noter_croises(room);
+        // Le port manette choisi dans le salon part avec la session prévue.
+        let moi_pseudo = self.pseudo();
+        if let Some((_, session)) = self.prevue.lock().unwrap().as_mut() {
+            if let Some(p) = room.places.iter().find(|p| p.pseudo == moi_pseudo) {
+                session.port_manette = p.port;
+            }
+        }
         let _ = app.emit("retro-room", serde_json::json!({ "room": room, "dans_ms": dans_ms }));
         if let Some(ms) = dans_ms {
             let moi = self.clone();
@@ -842,6 +1069,45 @@ impl Retro {
                     }
                 }
             });
+        }
+    }
+
+    /// Un message dans le chat de la room.
+    pub fn dire(&self, texte: &str) -> Result<(), String> {
+        if let Some(s) = self.serveur.lock().unwrap().as_ref() {
+            s.dire_hote(texte);
+            return Ok(());
+        }
+        match self.client.lock().unwrap().as_ref() {
+            Some(c) => c.dire(texte),
+            None => Err("Tu n'es dans aucune room.".into()),
+        }
+    }
+
+    pub fn choisir_port(&self, port: u8) -> Result<(), String> {
+        if let Some(s) = self.serveur.lock().unwrap().as_ref() {
+            return s.port_hote(port);
+        }
+        match self.client.lock().unwrap().as_ref() {
+            Some(c) => c.choisir_port(port),
+            None => Err("Tu n'es dans aucune room.".into()),
+        }
+    }
+
+    /// L'hôte retire un joueur de la room (il ne peut plus revenir).
+    pub fn exclure(&self, pseudo: &str) -> Result<(), String> {
+        match self.serveur.lock().unwrap().as_ref() {
+            Some(s) if s.exclure(pseudo) => Ok(()),
+            Some(_) => Err(format!("{pseudo} n'est pas dans la room.")),
+            None => Err("Seul l'hôte peut retirer quelqu'un.".into()),
+        }
+    }
+
+    /// L'hôte garde (ou libère) une place pour un pote.
+    pub fn reserver(&self, pseudo: &str) -> Result<(), String> {
+        match self.serveur.lock().unwrap().as_ref() {
+            Some(s) => s.reserver(pseudo),
+            None => Err("Seul l'hôte réserve des places.".into()),
         }
     }
 
@@ -1052,7 +1318,7 @@ mod tests {
         assert_eq!(retro.reglages().theme, None);
         retro.choisir_theme(Some("wii".into()), true, true, false);
 
-        let place = |p: &str| Place { pseudo: p.into(), pret: false, versions: Default::default(), sha1: String::new(), avatar: None };
+        let place = |p: &str| Place { pseudo: p.into(), pret: false, versions: Default::default(), sha1: String::new(), avatar: None, port: None };
         let room = Room {
             id: "r".into(),
             console: Console::Gamecube,
@@ -1063,6 +1329,9 @@ mod tests {
             privee: false,
             places: vec![place("Bront"), place("Vesper")],
             etat: netplay::Etat::Attente,
+            messages: Vec::new(),
+            exclus: Vec::new(),
+            reserves: Vec::new(),
         };
         retro.noter_croises(&room);
         let croises = retro.croises();
@@ -1084,5 +1353,37 @@ mod tests {
         assert!(adresse_autorisee("https://buildbot.libretro.com/stable/x.7z"));
         assert!(!adresse_autorisee("https://exemple.com/virus.exe"));
         assert!(!adresse_autorisee("http://buildbot.libretro.com/x"));
+    }
+
+    #[test]
+    fn fiches_perso_codes_et_stats() {
+        let dir = std::env::temp_dir().join(format!("squad-retro-fiches-{}", std::process::id()));
+        let retro = Retro::charger(Some(dir.clone()));
+        retro.enregistrer_compte(Compte { id: String::new(), pseudo: "Swift".into(), avatar: Avatar::default() }).unwrap();
+        let mauvais = MaFiche { codes: vec![Code { nom: "x".into(), format: triches::FormatCode::Retroarch, lignes: vec!["rm -rf /".into()], actif: true }], ..Default::default() };
+        assert!(retro.enregistrer_fiche(Console::Snes, "Super Mario World", mauvais).is_err());
+        let f = MaFiche {
+            statut: Some("cent".into()),
+            favori: true,
+            etiquettes: vec![" coop ".into(), "coop".into(), "".into()],
+            codes: vec![Code { nom: "Vies".into(), format: triches::FormatCode::Gecko, lignes: vec!["SXIOPO".into()], actif: true }],
+            reglages: ReglagesJeu { volume: Some(40), ..Default::default() },
+            ..Default::default()
+        };
+        let f = retro.enregistrer_fiche(Console::Snes, "Super Mario World", f).unwrap();
+        assert_eq!(f.etiquettes, vec!["coop"]);
+        assert_eq!(f.codes[0].format, triches::FormatCode::Retroarch);
+        let st = retro.stats();
+        assert_eq!((st.finis, st.cent, st.favoris), (1, 1, 1));
+        // Les codes partent dans le fichier de triches du core.
+        retro.ecrire_codes(Console::Snes, Path::new("/jeux/snes/Super Mario World (Europe).sfc"), &f).unwrap();
+        let cht = retro.emplacements().configs().join("cheats").join("Snes9x").join("Super Mario World (Europe).cht");
+        assert!(fs::read_to_string(cht).unwrap().contains("SXIOPO"));
+        // Un autre profil a ses propres fiches.
+        retro.enregistrer_compte(Compte { id: String::new(), pseudo: "Lucie".into(), avatar: Avatar::default() }).unwrap();
+        assert_eq!(retro.stats().favoris, 0);
+        let relu = Retro::charger(Some(dir.clone()));
+        assert_eq!(relu.stats().favoris, 0);
+        let _ = fs::remove_dir_all(&dir);
     }
 }

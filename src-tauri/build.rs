@@ -69,6 +69,14 @@ fn main() {
                 "retro_choisir_compte",
                 "retro_choisir_theme",
                 "retro_croises",
+                "retro_enregistrer_fiche",
+                "retro_options_mod",
+                "retro_avant_lancement",
+                "retro_stats",
+                "retro_dire",
+                "retro_choisir_port",
+                "retro_exclure",
+                "retro_reserver",
             ])),
     )
     .expect("échec de la préparation de la compilation");
